@@ -15,7 +15,7 @@ pcp_socket_dir = '/tmp'
 backend_hostname{{ loop.index0 }} = '{{ host }}'
 backend_port{{ loop.index0 }} = 5432
 backend_weight{{ loop.index0 }} = 1
-backend_data_directory{{ loop.index0 }} = '/var/lib/pgsql/9.3/data'
+backend_data_directory{{ loop.index0 }} = '/var/lib/pgsql/9.5/data'
 backend_flag{{ loop.index0 }} = 'ALLOW_TO_FAILOVER'
 {% endfor %}
 
@@ -78,7 +78,7 @@ debug_level = 0
 # FILE LOCATIONS
 #------------------------------------------------------------------------------
 
-pid_file_name = '/var/run/pgpool-II-93/pgpool.pid'
+pid_file_name = '/var/run/pgpool-II-95/pgpool.pid'
 logdir = '/tmp'
 
 

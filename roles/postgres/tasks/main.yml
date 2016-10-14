@@ -5,11 +5,11 @@
 - name: Install Postgres
   yum: name={{ item }} state=installed
   with_items:
-   - postgresql93
-   - postgresql93-libs
-   - postgresql93-devel
-   - postgresql93-server
-   - postgresql93-contrib
+   - postgresql95
+   - postgresql95-libs
+   - postgresql95-devel
+   - postgresql95-server
+   - postgresql95-contrib
    - python-psycopg2
    - perl-Digest-SHA
 
@@ -20,7 +20,8 @@
   template: src=pg_recovery_template.conf.j2 dest=/usr/local/etc/pg_recovery_template.conf
 
 - name: Initialise the DB server
-  command: creates=/var/lib/pgsql/9.3/data/PG_VERSION /etc/init.d/postgresql-9.3 initdb
+  # systemd?
+  command: creates=/var/lib/pgsql/9.5/data/PG_VERSION /etc/init.d/postgresql-9.5 initdb
 
 # This include sets up the following variables:
 #  - postgres_status: Is this server a master or slave?

@@ -12,7 +12,7 @@ logger -t pgpool_recovery "Starting recovery of ${REMOTE_HOST}"
 
 # Stop postgres, remove data, make new backup
 ssh -t postgres@${REMOTE_HOST} -- "
-sudo /etc/init.d/postgresql-9.3 stop;
+sudo /etc/init.d/postgresql-9.5 stop;
 rm -rf ${REMOTE_PGDATA};
 pg_basebackup -d \"host=${HOSTNAME} user=repl password=replpass\" -D ${REMOTE_PGDATA} -x -c fast;
 rm ${REMOTE_PGDATA}/recovery.done

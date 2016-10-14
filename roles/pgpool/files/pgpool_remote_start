@@ -11,4 +11,4 @@ fi
 DEST=$1
 DESTDIR=$2
 
-ssh -t postgres@$DEST -- sudo /etc/init.d/postgresql-9.3 start 2>/dev/null 1>/dev/null < /dev/null &
+ssh -t postgres@$DEST -- sudo systemctl start postgresql-9.5 2>/dev/null 1>/dev/null < /dev/null &
