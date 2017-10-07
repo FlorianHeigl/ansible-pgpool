@@ -1,0 +1,1836 @@
+#!/usr/bin/env python
+
+"""
+Rudder development tool.
+
+You need a configuration file, if you don't have one, the tool will create one for you at first run.
+
+Usage:
+    rudder-dev -h|--help
+    rudder-dev [-f|--force] clone <repository_name> [--fork]
+    rudder-dev [-f|--force] pull [<branch>]
+    rudder-dev [-f|--force] branch <ticket_id> [--base=<ticket_id>]
+    rudder-dev [-f|--force] quickfix <pr_url/file> [<subject>|<trigraph>] [--merge]
+    rudder-dev [-f|--force] technique <version> <comment>
+    rudder-dev [-f|--force] subtask [<next_branch>] [--base=<ticket_id>] [--title=<new_title>] [--bug]
+    rudder-dev [-f|--force] wip
+    rudder-dev [-f|--force] commit [<trigraph> [<PR_comment>]]
+    rudder-dev [-f|--force] amend [<PR_comment>]
+    rudder-dev [-f|--force] rebase [--base=<ticket_id>] [<PR_comment>]
+    rudder-dev [-f|--force] retarget [<target_version>]
+    rudder-dev [-f|--force] takeover <ticket_id>
+    rudder-dev [-f|--force] revert <ticket_id> [--retarget]
+    rudder-dev [-f|--force] merge all [(-s <strategy>)] [-a|--automatic] [-t|--test] [-n|--no-qa-test]
+    rudder-dev [-f|--force] merge <first_branch/ticket_id/pr_url> [(-s <strategy>)] [-a|--automatic] [-t|--test] [-n|--no-qa-test]
+    rudder-dev [-f|--force] merge <first_branch> <next_branch> [(-s <strategy>)] [-a|--automatic] [-t|--test] [-n|--no-qa-test]
+    rudder-dev [-f|--force] merge [(-s <strategy>)] [-a|--automatic] [-t|--test] [-n|--no-qa-test]
+    rudder-dev [-f|--force] find <command>
+    rudder-dev [-f|--force] cleanup [--more] [-n|--dry-run]
+    rudder-dev [-f|--force] update
+    rudder-dev [-f|--force] blame <file> [--before=<commit_id>] [--changed-after=<commit_id>] [--long]
+    rudder-dev [-f|--force] <smart_arg> [<PR_message>] [--base=<ticket_id>]
+
+SMART
+    <smart_arg> is a shortcut for other commands
+    - if it is a number > 100, it is guessed to be a ticket_id -> branch
+    - if it is a x.y or master, it is guessed to be a branch -> pull
+    - if it is a caps TLA, it is guessed to be a trigraph -> commit -u
+    - if it is '-', checkout the last branch we where working on
+
+CLONE
+    Call it when you want to work on a new repository.
+    - fork the repository from Normation if --fork is given
+    - clone it
+    - setup both remote repository in git
+    ex: rudder-dev clone rudder-techniques
+    
+PULL
+    Call it to make sure you are on a branch and up to date.
+    - create the branch with remote tracking if it doesn't exist
+    - checkout the branch if specified
+    - update the current branch
+    ex: rudder-dev pull 3.0
+    ex: rudder-dev pull master
+
+BRANCH
+    Call it before working on a bug.
+    - if the branch already exist, just checkout it
+    - find and check the ticket from redmine
+    - create a branch with the proper name in your repository
+    - set the ticket status to "in progress"
+    - if --base is given, use the PR from the base ticket as the origin branch
+    - --base can also be a local branch name
+    ex: rudder-dev branch 1234
+    ex: rudder-dev branch '#1234' --base 1233
+
+QUICKFIX
+    Call it when you or someone made a quick fix.
+    If a quick fix PR is already opened:
+    - open an issue of type bug with subject
+    - takeover existing PR
+    - close existing PR and link the new one
+    - merge if needed
+    If the fix is in a local file:
+    - check that the diff is small
+    - find the first branch having the problem
+    - open an issue of type bug with subject
+    - call rudder-dev branch on the issue
+    - patch the file
+    - commit with git
+    - call rudder dev commit
+    ex: rudder-dev quickfix README "Typo in readme"
+    ex: rudder-dev quickfix https://github.com/Normation/ncf/pull/486 --merge
+
+TECHNIQUE
+    Call it after branching and before working on a new technique version.
+    You must be in the technique directory containing all technique versions.
+    - create a new version of a technique based on the last known version
+    - add the comment to the changelog
+    - create a commit for this new version
+    ex: cd techniques/applications/apacheServer
+        rudder-dev technique 4.0 "Add a new option"
+
+SUBTASK
+    Call it after commiting a patch and you want a different patch on the next version.
+    Or if you want to extend a feature from one branch in a new branch.
+    Or if just discovered a bug in a PR that was just merdged.
+    For example, after a ncf v0.x patch you want to amend it in ncf v1.
+    - create a new ticket that is the child copy of the current one (set its tracker to Bug if --bug)
+    - set the new ticket version to next_version (but not with --bug)
+    - replace the issue's title if needed (if the new title starts with '+', extend the existing title)
+    - call rudder-dev branch on the new ticket with a base branch from the old ticket
+    - suggest modifications for logs in the modified files (ncf v1 specific)
+    ex: rudder-dev sub <version>
+
+WIP
+    Commit a work in progress to keep it for later.
+    Later call to rudder-dev commit will merge wip with the final commit.
+    - commit with a sample "Work in progress" message
+    - push on matching branch on own repository
+    ex: rudder-dev wip
+
+COMMIT
+    Call it after working on a branch.
+    - fork the repository if it has not yet been forked
+    - if no file is indexed by git, call git add -u
+    - commit current work
+    - push the branch to your github repository
+    - make a pull-request to Normation's repository
+    - update the coresponding bug with those informations
+    ex: rudder-dev commit BPF "@reviewer please tell me it's good"
+    ex: rudder-dev commit
+
+AMEND
+    Call it after you made a change to a branch with a PR.
+    - if no file is indexed by git, call git add -u
+    - commit current work amending last commit
+    - push the branch to your github repository
+    - add a comment to the PR to signal the change
+    ex: rudder-dev amend "@reviewer pr updated"
+
+REBASE
+    Call it when a PR is not mergeable anymore.
+    - interactive rebase on NRM branch
+    - if rebase has worked, push to OWN
+    - add a comment to the PR to signal the change
+    - if --base is given, use the PR from the base ticket as the origin branch
+    - --base can also be a local branch name
+    ex: rudder-dev rebase "@reviewer pr updated"
+    ex: rudder-dev rebase --base 1234
+
+RETARGET
+    Call it when you started on the wrong version, to change the base branch.
+    - if a version is provided, update the ticket with it
+    - if the ticket's version has changed, continue
+    - rebase to ticket's NRM branch
+    - close current PR
+    - create new PR
+    - update ticket
+    ex: rudder-dev retarget
+
+TAKEOVER
+    Call it when someone else has started a work you want to continue.
+    - if the ticket has no pull-request, abandon
+    - checkout upstream branch into local repository
+    - rename it if needed
+    - update the ticket's status
+    ex: rudder-dev takeover 1234
+
+REVERT
+    Call it when a PR has been merged but you don't want it.
+    - If the ticket has no pull-request, abandon
+    - If retarget, ensure we have everything merged
+    - Find merge commit of pull request
+    - Revert pull request merge commit
+    - if retarget, merge it to next branch with ours strategy (keep changes in next branch)
+    ex: rudder-dev revert 1234
+
+MERGE
+    Call it when you want to merge different branches (needs commit rights)
+    or when you want to merge a Pull-Request.
+    "merge all" and "merge <first_branch>" are only valid within Rudder versioned repositories.
+    Use --automatic to automatically validate merge comment.
+    There is a special strategy call upto_XXX where XXX is a version number.
+    When we reach this version, use -s ours to avoid upmerging to later branches.
+    - detect the ticket id from current branch if there is no parameter 
+    - checkout an pull last version or the PR branch for a given ticket
+    - checkout an pull new version
+    - merge both
+    - push result to Normation's repository
+    - if we are merging a ticket or 'all', continue merging to next version
+    If the merge fails, please make adjustments, commit and rerun this command.
+    ex: rudder-dev merge 3.0 master
+    ex: rudder-dev merge all
+    ex: rudder-dev merge 1234
+    ex: rudder-dev merge https://github.com/Normation/ncf/pull/388 -s upto_3.1
+
+FIND
+    Call it to search thing within active branches.
+    - for each branch version
+    - checkout branch
+    - run command
+    - find when it returns 0
+    ex: rudder-dev find 'grep bugfix path/file.cf'
+
+CLEANUP
+    Call it when your local repository becomes messy.
+    - for each branch in local repository
+    - if ticket is closed
+    - if branch's commit are pushed upstream
+    - remove local and remote branch
+    With --more, include more branch that are not strictly clean, such as 
+      closed tickets that have un unmerged commits are asked to the user.
+    ex: git cleanup
+
+UPDATE
+    Call it when you want the last version of rudder-dev.
+    - download last version from https://www.rudder-project.org/tools/rudder-dev
+    - replace current rudder-dev with it
+    - use sudo if needed
+
+BLAME
+    Call it to find when a line has been modified
+    - run git blame on the file
+    - reformat output to be shorter and add redmine issue id
+    - stop before a specific commit with --before
+    - add issue description if --long is provided
+    - find lines changed after a commit id with --changed-after (useful to find deleted lines)
+    - changed after and before are incompatible
+"""
+
+from __future__ import print_function
+import sys
+import os
+import re
+import string
+import webbrowser
+import locale
+import time
+import json
+from distutils.version import LooseVersion
+from pprint import pprint
+from tempfile import NamedTemporaryFile
+
+import requests # apt-get install python-requests || pip install requests
+import docopt # apt-get install python-docopt || pip install docopt
+
+# Fake imports are a solution to make the source be a valid python file
+# whereas the script need to stay a single file. 
+# We just replace the import at build time with the corresponding file content.
+# Please note that current code won't work properly with real import
+# but it could be interesting (or not).
+from common import *  # fake import
+from github import *  # fake import
+from redmine import * # fake import
+
+
+## GLOBAL VARIABLES
+Config.RUDDER_DEV_ORIGIN = "https://www.rudder-project.org/tools/rudder-dev"
+Config.WARN_FOR_UPDATE_AFTER = 15 # days
+
+Config.LIFECYCLES = [ { "name": "rudder",
+                 "project_id": "21",
+                 "detection": r'^\*?\s+remotes/{}/branches/rudder/(.*)',
+                 "format": "branches/rudder/{}",
+                 "redmine_version": [ (r'master|.*~alpha\d+', r'master'), (r'.*~prototype', r'prototype'), (r'(\d+\.\w\d*).*', r'\1') ],
+               },
+               { "name": "ncf",
+                 "project_id": "41",
+                 "detection": r'^\*?\s+remotes/{}/v(\d\..*)',
+                 "format": "v{}",
+                 "redmine_version": [ (r'^master$', r'master'), (r'.*~prototype', r'prototype'), (r'(\d+\.\w\d*).*', r'\1') ],
+               },
+               { "name" : "master_only",
+                 "detection": r'(.*)',
+                 "format": "master",
+                 "redmine_version": [ (r'.*', r'master') ],
+               },
+             ]
+
+###
+###  Internal functions
+### 
+
+def parse_ticket_id(ticket_id):
+  if ticket_id.startswith('#'):
+    ticket_id = ticket_id[1:]
+  internal = False
+  match = re.match(r'i(\d+)', ticket_id)
+  if match:
+    ticket_id = match.group(1)
+    Config.REDMINE_TOKEN = Config.REDMINE_ALT_TOKEN
+    Config.REDMINE_API_URL = Config.REDMINE_ALT_API_URL
+    Config.CUSTOM_FIELD_PR = Config.ALT_CUSTOM_FIELD_PR
+    internal = True
+  return (ticket_id, internal)
+
+
+# Get the version included in a ticket
+# Deprecated, use Issue['version'] or Issue._get_version()
+def get_version(ticket, error_fail=True):
+  if 'fixed_version' not in ticket:
+    if error_fail:
+      logfail("***** BUG: Can't extract version from #" + str(ticket['id']))
+      exit(2)
+    else:
+      return None
+  detector = get_lifecycle()['redmine_version']
+  for k,v in detector:
+    if re.match(k, ticket['fixed_version']['name']):
+      return re.sub(k, v, ticket['fixed_version']['name'])
+  if error_fail:
+    logfail("***** BUG: Can't extract version from " + ticket['fixed_version']['name'])
+    exit(2)
+  else:
+    return None
+ 
+
+# Get informations about a ticket from redmine
+# Deprecated, use Issue()['field']
+def get_ticket_info(ticket_id, internal=False, must_be_open=True):
+  # Find ticket in redmine
+  print("Looking for Redmine ticket #" + str(ticket_id) + "... ", end=' ')
+  sys.stdout.flush() # to display previous unfinished line
+  tickets_req = requests.get(Config.REDMINE_API_URL + "/issues/" + str(ticket_id) + ".json?include=journals", 
+                             headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN, 'Content-Type': 'application/json' })
+  ticket = tickets_req.json()['issue'] if tickets_req.status_code == requests.codes.ok else None
+  if not ticket:
+    print("Not found!")
+    logfail("***** ERROR: ticket not found. Exiting.")
+    if not Config.force:
+      exit(2)
+  else:
+    print("Done")
+  
+  # Check ticket type
+  if ticket['tracker'] in Config.REDMINE_META_TRACKERS:
+    print("This is a question ticket! You cannot make a pull request on this ticket.")
+    logfail("***** ERROR: This is a question ticket. Exiting.")
+    if not Config.force:
+      exit(2)
+
+  # Check ticket status
+  if must_be_open and ticket['status']['id'] in Config.REDMINE_CLOSED_STATUSES:
+    print("This ticket is closed! You cannot make a pull request on this ticket.")
+    logfail("***** ERROR: Closed ticket. Exiting.")
+    if not Config.force:
+      exit(2)
+
+  if 'fixed_version' not in ticket:
+    print("This ticket has no target version! I can't make a branch against its repository.")
+    logfail("***** ERROR: Missing target version. Exiting.")
+    if not Config.force:
+      exit(2)
+
+  # TODO check assignment ? project ?
+
+  # Get ticket elements
+  info = {}
+  info['id'] = ticket_id
+  info['type'] = ticket['tracker']['name']
+  info['name'] = ticket['subject']
+  info['version'] = get_version(ticket)
+  info['project_id'] = ticket['project']['id']
+  info['internal'] = internal
+  info['tracker_id'] = ticket['tracker']['id']
+  info['priority_id'] = ticket['priority']['id']
+  info['subject'] = ticket['subject']
+  info['description'] = ticket['description']
+  info['private'] = 'is_private' in ticket and ticket['is_private']
+  if 'category' in ticket:
+    info['category_id'] = ticket['category']['id']
+  if 'is_private' in ticket:
+    info['is_private'] = ticket['is_private']
+  if 'custom_fields' in ticket:
+    for field in ticket['custom_fields']:
+      if field['id'] == Config.CUSTOM_FIELD_PR and 'value' in field:
+        info['pr'] = field['value']
+
+  # Get ticket's last assignment besides me
+  my_id = get_redmine_uid()
+  if 'journals' in ticket:
+    for journal in ticket['journals']:
+      if 'details' in journal:
+        for detail in journal['details']:
+          if detail['name'] == 'assigned_to_id' and 'old_value' in detail:
+            if int(detail['old_value']) != my_id:
+              info['last_assignee'] = int(detail['old_value'])
+
+  return info
+
+
+# Return true if the current user can modify an issue in the given project
+# Deprecated, use Redmine.can_modify_issues()
+Config.REDMINE_CAN_MODIFY=None
+def can_modify_issues(project_id):
+  if Config.REDMINE_CAN_MODIFY is not None:
+    return Config.REDMINE_CAN_MODIFY
+  data = requests.get(Config.REDMINE_API_URL + "/users/current.json?include=memberships", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+  user = data.json()
+  for membership in user['user']['memberships']:
+    if membership['project']['id'] == project_id:
+      for role in membership['roles']:
+        if role['id'] in Config.ACCESS_ROLE_LIST:
+          Config.REDMINE_CAN_MODIFY = True
+          return True
+  Config.REDMINE_CAN_MODIFY = False
+  return False
+
+
+# Change a ticket version to the closest version available
+def update_ticket_version(info, version):
+  if not can_modify_issues(info['project_id']):
+    logfail("Cannot change ticket version since you are not a developer, you should change it manualy before calling retarget")
+    exit(13)
+
+  # list all versions
+  versions = requests.get(Config.REDMINE_API_URL + "/projects/" + str(info['project_id']) + "/versions.json", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+  # keep versions that match and that are still open
+  valid_versions = [ v for v in versions.json()['versions'] if v['status'] == 'open' and v['name'].startswith(version) ]
+  # there should only only, but in doubt keep the last one
+  final_version = valid_versions[-1]
+
+  # set the version
+  ticket_info = { 'issue': { 'fixed_version_id': final_version['id'] } }
+  url = Config.REDMINE_API_URL + "/issues/" + str(info['id']) + ".json"
+  ticket_json = json.dumps(ticket_info)
+  ret = requests.put(url, headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN, 'Content-Type': 'application/json' }, data=ticket_json )
+  if ret.status_code != 200:
+    logfail("Ticket Update error: " + ret.reason)
+    print(ret.text)
+    if not Config.force:
+      exit(3)
+  info['version'] = get_version( { 'fixed_version': final_version } )
+
+
+# Change ticket state to technical review
+# Deprecated, use Issue.update()
+def ticket_to_TR(info, user_id=None, pr_url=None, message=None):
+  # Create note content
+  note = None
+  if pr_url is not None:
+    note = "PR " + pr_url
+  if message is not None:
+    if note is None:
+      note = message
+    else:
+      note += "\n" + message
+
+  if can_modify_issues(info['project_id']):
+    # fill ticket data with developer available content
+    ticket_info = { 
+            'issue': {
+                'status_id': Config.PENDING_TR_CODE,
+            }
+        }
+    if user_id is not None:
+      ticket_info['issue']['assigned_to_id'] = user_id
+    if note is not None:
+      ticket_info['issue']['notes'] = note
+    if pr_url is not None:
+      ticket_info['issue']['custom_fields'] = [ { 'id': Config.CUSTOM_FIELD_PR, 'value': pr_url } ]
+
+  else:
+    # just append the note to ticket
+    if note is None:
+      return
+    else:
+      ticket_info = {
+              'issue': {
+                'notes': note,
+              }
+          }
+  
+  # call the api
+  url = Config.REDMINE_API_URL + "/issues/" + str(info['id']) + ".json"
+  ticket_json = json.dumps(ticket_info)
+  ret = requests.put(url, headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN, 'Content-Type': 'application/json' }, data=ticket_json )
+  if ret.status_code != 200:
+    logfail("Ticket Update error: " + ret.reason)
+    print(ret.text)
+    if not Config.force:
+      exit(3)
+
+
+# get current redmine user
+def get_redmine_uid():
+  user = requests.get(Config.REDMINE_API_URL + "/users/current.json", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+  return user.json()['user']['id']
+
+
+# update normation user list cache and return updated user list
+def update_nrm_users(project_id):
+  users = get_cache_info(Config.REDMINE_API_URL)
+  if users is None:
+    users = {}
+  # just update it otherwise we would have only project specific data in it
+  user_list = requests.get(Config.REDMINE_API_URL + "/projects/" + str(project_id) + "/memberships.json?limit=100", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+  for user in user_list.json()['memberships']:
+    if 'user' in user: # it can be a user or a group
+      id = user['user']['id']
+      user_data = requests.get(Config.REDMINE_API_URL + "/users/" + str(id) + ".json", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+      user_detail = user_data.json()['user']
+      if 'mail' in user_detail and user_detail['mail'].endswith("normation.com"):
+        trigraph = (user_detail['firstname'][0] + user_detail['lastname'][:2]).upper()
+        users[trigraph] = { 'id': id, 'trigraph': trigraph, 'firstname':user_detail['firstname'] , 'lastname':user_detail['lastname'] }
+  set_cache_info(Config.REDMINE_API_URL, users)
+  return users
+
+# get users ad trigraph for normation users
+def get_nrm_users(project_id):
+  users = get_cache_info(Config.REDMINE_API_URL)
+  if users is None:
+    return update_nrm_users(project_id)
+  return users
+
+# Ask for a user using its trigraph
+def ask_username(project_id, trigraph):
+  # List Normation users and index by trigraph
+  user_ids = get_nrm_users(project_id)
+
+  # Ask for trigraph of user until found
+  if trigraph is not None:
+    trigraph = trigraph.upper()
+  while trigraph not in user_ids:
+    print("Assign to ?")
+    for user in user_ids.values():
+      print("  " + user['trigraph'] + ". " + user['firstname'] + " " + user['lastname'])
+    print("  NON. No one")
+    print("Enter trigraph (or 'r' to reload user list, 'n' for ): ", end='')
+    sys.stdout.flush() # to display previous unfinished line
+    trigraph = sys.stdin.readline().strip().upper()
+    if trigraph == 'R':
+      user_ids = update_nrm_users(project_id)[Config.REDMINE_API_URL]
+    if trigraph == 'NON':
+      return None
+  return user_ids[trigraph]['id']
+
+
+# Find a ticket id in a branch name
+# Deprecated: use issue_from_branch
+def ticket_from_branch(branch, must_be_open=True):
+  match = re.match(r'[A-Za-z]+_(i?\d+)/.*', branch)
+  if match:
+    (ticket_id, internal) = parse_ticket_id(match.group(1))
+    return get_ticket_info(ticket_id, internal, must_be_open)
+  else:
+    logfail("***** ERROR: This is not a ticket branch: " + branch)
+    exit(4)
+
+
+# Get an issue object from a branch name
+def issue_from_branch(branch, must_be_open=True):
+  match = re.match(r'[A-Za-z]+_(i?\d+)/.*', branch)
+  if match:
+    return Issue(match.group(1), must_be_open)
+  else:
+    logfail("***** ERROR: This is not a ticket branch: " + branch)
+    exit(4)
+
+
+current_lifecycle = None
+# Get the current lifecycle
+def get_lifecycle():
+  global current_lifecycle
+  if current_lifecycle is not None:
+    return current_lifecycle
+  # Update branches so get new branches from UPSTREAM
+  shell("git fetch --force " + Config.UPSTREAM_REPOSITORY, "Fetching upstream " + Config.UPSTREAM_REPOSITORY + " to detect lifecycle")
+  lines = os.popen("git branch --no-color --list -a").readlines()
+  for lifecycle in Config.LIFECYCLES:
+    for line in lines:
+      if re.match(lifecycle["detection"].format(Config.UPSTREAM_REPOSITORY), line):
+        current_lifecycle = lifecycle
+        return current_lifecycle
+  return current_lifecycle
+
+
+version_list = None
+version_dict = None
+# get the version list for a given project
+def get_versions():
+  global version_list, version_dict
+  if version_list is not None:
+    return (version_list, version_dict)
+
+  # list all versions in git
+  lifecycle = get_lifecycle()
+  if lifecycle['name'] == 'master_only':
+    return (['master'], {}) # unknown version id wince master can match many versions
+  git_version_list = []
+  for line in os.popen("git branch --no-color --list -a"):
+    m = re.match(lifecycle["detection"].format(Config.UPSTREAM_REPOSITORY), line)
+    if m:
+      git_version_list.append(m.group(1))
+
+  # list all versions using redmine
+  versions = requests.get(Config.REDMINE_API_URL + "/projects/" + lifecycle['name'] + "/versions.json", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN } )
+  redmine_version_list = []
+  version_dict = {}
+  for version in versions.json()['versions']:
+    if version['status'] != 'open':
+      continue
+    detector = lifecycle['redmine_version']
+    v = None
+    for k,val in detector:
+      if re.match(k, version['name']):
+        v = re.sub(k, val, version['name'])
+        break
+    if v in git_version_list or v == 'master' or v == 'prototype':
+      redmine_version_list.append(v)
+      version_dict[v] = version['id']
+  
+  # keep unique name and sort
+  version_list = list(set(redmine_version_list))
+  try:
+    # order is the right one because x.y < 'master' < 'prototype'
+    version_list.sort(key=LooseVersion)
+  except TypeError as e:
+    import distutils.version
+    filename = distutils.version.__file__
+    logfail("You are using python 3 with an unpatched LooseVersion, merge functions won't work")
+    logfail("You need to patch " + filename + " with http://bugs.python.org/file25808/14894.patch to make it work")
+    logfail("Sorry for the inconvenience")
+    exit(16)
+  return (version_list, version_dict)
+
+
+# get the version after old
+def get_next_version(old):
+  all_versions = get_versions()[0]
+  new = None
+  for idx, version in enumerate(all_versions):
+    if old == version:
+      if idx < len(all_versions)-1:
+        new = all_versions[idx+1]
+  if new is None:
+    logfail("Don't know how to find the version after " + old)
+    exit(9)
+  return new
+
+
+# Get branch name from version
+def branch_from_version(version):
+  # detect lifecycle and base the name on it
+  lifecycle = get_lifecycle()
+  if version == "master":
+    return version
+  elif version == "prototype":
+    return "prototype/windows-dsc"
+  else:
+    return lifecycle['format'].format(version)
+
+
+# Get a version from a branch name
+def version_from_branch(branch):
+  # detect lifecycle and extract the name
+  lifecycle = get_lifecycle()
+  if branch == "master":
+    return branch
+  elif branch == "prototype/windows-dsc":
+    return "prototype"
+  else:
+    m = re.match(lifecycle["format"].format('(.*)'), branch)
+    if m:
+      return m.group(1)
+  return None
+
+
+# Calculate branch name from a ticket
+# Deprecated: use issue.branch_name()
+def branch_from_ticket(info):
+  branchified_ticket_name = re.sub("__+", "_", re.sub("[^" + string.ascii_letters + string.digits + "]", "_", info['name'].strip().lower())).strip("_")
+  if info['internal']:
+    id = 'i' + str(info['id'])
+  else:
+    id = str(info['id'])
+  if info['private']:
+    branch_name = Config.TRACKER_NAME_MAPPING[info['type']] + "_" + id + "/_"
+  else:
+    branch_name = Config.TRACKER_NAME_MAPPING[info['type']] + "_" + id + "/" + branchified_ticket_name
+  return branch_name
+
+
+# Find an existing branch for a ticket id
+def branch_from_ticket_id(ticket_id, internal):
+  for line in os.popen("git branch --no-color --list"):
+    if internal:
+      ticket = 'i'+str(ticket_id)
+    else:
+      ticket = str(ticket_id)
+    match = re.search(r'^\*?\s*(\w+_' + ticket + r'/.*?)\n', line)
+    if match:
+      return match.group(1)
+  return None
+
+
+# Find remote repository name from current directory
+def remote_repo():
+  value = shell("git remote -v", keep_output=True).strip()
+  match = re.search(r'git@github.com:Normation/(.*?).git', value)
+  if match:
+    return match.group(1)
+  match = re.search(r'https://github.com/Normation/(.*?)(/|.git)', value)
+  if match:
+    return match.group(1)
+  logfail("Can't find remote repository")
+  exit(10)
+
+
+# create a new PR
+def create_pr(master_branch, info, message):
+  url = "https://api.github.com/repos/Normation/{repo}/pulls"
+  user = get_github_user()
+  body = Config.REDMINE_API_URL + "/issues/" + str(info['id'])
+  if message is not None:
+    body += "\n\n" + message + "\n"
+
+  if info['private']:
+    title = ''
+  else:
+    title = info['name']
+  pr = '{ "title": ' + json.dumps('Fixes #' + str(info['id']) + ": " + title) + ','
+  pr += ' "body": ' + json.dumps(body) + ','
+  pr += ' "head": "' + user + ':' + current_branch + '",'
+  pr += ' "base": "' + master_branch + '" }'
+  result = github_request(url, "Creating PR ...", pr_url=None, post_data=pr)
+
+  if 'html_url' in result:
+    return result['html_url']
+  elif 'errors' in result and 'message' in result['errors'][0]:
+    error_message = result['errors'][0]['message']
+    logfail("Error occured in create PR: " + error_message)
+  else:
+    logfail("Unkown error occured in create PR")
+
+  if not Config.force:
+    exit(16)
+  else:
+    return None
+
+
+# add a message to a given pull-request on github
+def update_pr(pr_url, info, comment):
+  message = info
+  if comment is not None:
+    message += "\\n" + comment
+  issue = '{ "body": "' + message + '" }'
+  url = "https://api.github.com/repos/Normation/{repo}/issues/{pr_id}/comments"
+  github_request(url, "Updating PR ...", pr_url, issue)
+
+
+# close a given pull-request on github
+def close_pr(pr_url, comment):
+  # Add comment on the closing reason
+  issue = '{ "body": "' + comment + '" }'
+  url = "https://api.github.com/repos/Normation/{repo}/issues/{pr_id}/comments"
+  github_request(url, "Commenting PR ...", pr_url, issue)
+  
+  # close the PR
+  issue = '{ "state": "closed" }'
+  url = "https://api.github.com/repos/Normation/{repo}/pulls/{pr_id}"
+  github_request(url, "Closing PR ...", pr_url, issue)
+
+
+# get PR upstream branch
+def get_pr_upstream(pr_url):
+  url = "https://api.github.com/repos/Normation/{repo}/pulls/{pr_id}"
+  pr = github_request(url, None, pr_url)
+  return pr['base']['ref']
+  
+# get PR source informations
+# Deprecated: use PR.repo() and PR.remote_branch()
+def get_pr_source(pr_url):
+  url = "https://api.github.com/repos/Normation/{repo}/pulls/{pr_id}"
+  pr = github_request(url, None, pr_url)
+  return (pr['head']['repo']['ssh_url'], pr['head']['ref'])
+
+# get PR merge commit
+def get_pr_merge_commit(pr_url):
+  url = "https://api.github.com/repos/Normation/{repo}/issues/{pr_id}/events"
+  pr_events = github_request(url, None, pr_url)
+  pr_merged = [ pr for pr in pr_events if pr["event"] == "merged" ]
+  if len(pr_merged) != 1: 
+    logfail("Can't find merge commit for pull request")
+    exit(12)
+  return pr_merged[0]['commit_id']
+
+
+# Commit and push, if needed squash WIP and force push
+def commit_push(branch, message, force_amend=False):
+  # Fork if needed
+  if github_fork():
+    # github fork is asynchronous but pretty fast, this should be sufficient
+    time.sleep(2)
+
+  # git add if needed
+  files = shell("git status --untracked-files=no --porcelain", keep_output=True)
+  # git status returns a space at beginning of a line if the file is not indexed
+  # if all lines start with a space then nothing is indexed
+  if re.search(r'^[^ ]', files, flags=re.M) is None: # beware, this is a double negation
+    # if nothing is indexed, call git add -u
+    shell("git add -u", "No file added, adding all tracked files that were modified")
+
+  (code, wip, err) = shell("git log --grep \"^Work in progress\" HEAD^..", keep_output=True, fail_exit=False)
+  if code == 0:
+    wip = wip.strip()
+  else:
+    wip = ''
+  commit_cmd = "git commit"
+  if message != '':
+    # replace ' with '"'"', which will be replaced by the shell
+    commit_cmd += " -m '" + message.replace("'", "'\"'\"'") + "'"
+  if force_amend or wip != "":
+    commit_cmd += " --amend --no-edit"
+  shell(commit_cmd, "Commiting")
+
+  # Should we check the need for rebasing before pushing ?
+
+  push_cmd = "git push " + Config.OWN_REPOSITORY + " " + branch
+  if force_amend or wip != "":
+    push_cmd += " --force"
+  shell(push_cmd, "Pushing to " + Config.OWN_REPOSITORY + " ... ")
+
+
+# insert a line in a file after a regex has matched
+def insert_line(filename, regex, text):
+  content=[]
+  with open(filename, "r+") as fd:
+    for line in fd:
+      content.append(line)
+      if re.match(regex, line):
+        content.append(text)
+    fd.seek(0)
+    fd.truncate()
+    fd.writelines(content)
+
+
+# fetch a branch from a PR
+def fetch_branch_from_pr(pr):
+  branch_name = pr.remote_branch()
+  fetch_branch_from_pr_as(pr, branch_name + "_pr")
+  return branch_name + "_pr"
+
+def fetch_branch_from_pr_as(pr, new_name):
+  branch_name = pr.remote_branch()
+  # compare remote_branch/repo_name with upstream/repo_name
+  remote_url = os.popen("git ls-remote --get-url " + Config.UPSTREAM_REPOSITORY).readline()
+  match = re.match(r'.*/([^/]+)\.git$', remote_url)
+  if pr.repo_name != match.group(1):
+    logfail("The repository of this PR doesn't match your current repository name")
+    if not Config.force:
+      exit(17)
+  # PR can be rebased, force fetch the branch
+  shell("git fetch --update-head-ok " + pr.repo() + " +" + branch_name + ":" + new_name, "Fetching branch from remote " + pr.repo())
+
+
+# fetch a branch from a PR given in an Issue
+def fetch_branch_from_issue(issue):
+  if 'pr' not in issue or issue['pr'] == '':
+    logfail("There is no PR in this issue " + issue.name)
+    exit(15)
+  pr = PR(issue['pr'])
+  new_name = issue.branch_name()
+  fetch_branch_from_pr_as(pr, new_name)
+  return new_name
+
+
+# fetch a branch from a PR given in a ticket
+# Deprecated: use fetch_branch_from_issue
+def fetch_branch_from_ticket(ticket):
+  # extract ticket info
+  (ticket_id, internal) = parse_ticket_id(ticket)
+  info = get_ticket_info(ticket_id, internal)
+  if 'pr' not in info or info['pr'] == '':
+    logfail("There is no PR in this ticket " + ticket)
+    exit(15)
+
+  # look for PR
+  (repo, remote_branch) = get_pr_source(info['pr'])
+
+  # fetch remote branch
+  branch_name = branch_from_ticket(info)
+  shell("git fetch --update-head-ok " + repo + " " + remote_branch + ":" + branch_name, "Fetching branch from remote " + repo)
+
+  return branch_name
+
+
+def github_fork():
+  # we don't need to fork if the remote is known
+  remotes = shell("git remote show", keep_output=True).strip()
+  if re.search('^'+Config.OWN_REPOSITORY+"$", remotes, flags=re.MULTILINE):
+    return False
+
+  # fork the report if not already forked
+  if Config.REMOTE_PROTOCOL == 'ssh':
+    base_url = "git@github.com:"
+  else:
+    base_url = "https://github.com/"
+  user = get_github_user()
+  remote = remote_repo()
+  fork_needed = shell("git ls-remote " + base_url + user + "/" + remote + ".git HEAD > /dev/null 2>/dev/null; echo $?", keep_output=True).strip()
+  if fork_needed != "0":
+    github_request("https://api.github.com/repos/Normation/{repo}/forks", "Forking repository ...", pr_url=None, post_data="")
+
+  # Add the remote repository to the local list
+  shell("git remote add " + Config.OWN_REPOSITORY + " " + base_url + user + "/" + remote + ".git", "Adding own remote repository")
+
+  # Tell if we forked or not
+  return fork_needed != "0"
+
+
+# Find if there is work in progress and stash it
+stashed=False
+def stash():
+  global stashed
+  # count number of change
+  change_count = shell("git status --porcelain --untracked-files=no | wc -l", keep_output=True).strip()
+  if change_count != "0":
+    # stash them
+    shell("git stash save --keep-index", "Stashing current work")
+    stashed = True
+  # If we stash, it means we are going to checkout
+  # Store global current_branch for use by rudder-dev -
+  set_cache_info("last_branch", current_branch, remote_repo())
+
+
+# Find if there is stashed work and unstash it
+unstashed=False
+not_unstashed=False
+def unstash():
+  global unstashed,not_unstashed
+
+  # get current branch (the global variable may not be accurate in flight)
+  this_branch = shell("git rev-parse --abbrev-ref HEAD", keep_output=True).strip()
+
+  # do not unstash if we are on an origin branch since you should not work directly on them
+  remote_count = shell("git ls-remote -h " + Config.UPSTREAM_REPOSITORY + " " + this_branch + " | wc -l", keep_output=True).strip()
+  if remote_count != "0":
+    return
+
+  # list available stashes
+  stash_output = shell("git stash list", keep_output=True)
+  for line in stash_output.splitlines():
+    # parse
+    match = re.match(r'^(stash@{.*?}): WIP on (.*?):.*', line)
+    if match:
+      # match with current branch
+      if match.group(2) == this_branch:
+        # only unstash things we have stashed
+        if not stashed:
+          not_unstashed=True
+          return
+        # unstash it
+        shell("git stash pop --index '" + match.group(1) + "'" , "Unstashing previous work")
+        unstashed=True
+        # unstash only once
+        return
+
+
+# Tell the user if some stash command happened
+def stash_info():
+  if stashed:
+    print("Some work in progress has been found, " + Config.ERROR_TPL.format("I stashed it") + " before running the commands, to retrieve it use git stash pop")
+  if unstashed:
+    print("Previous work in progress has been found in the stash, " + Config.ERROR_TPL.format("I unstashed it") + ", to hide it again, use git stash save")
+
+  if not_unstashed:
+    print("Previous work in progress has been found in the stash, " + Config.ERROR_TPL.format("I left it stashed") + ", to unstash it, use git stash pop")
+
+
+###
+### MAIN methods 
+###   branch, commit, rebase, clone, pull
+###
+
+# Create a branch from a ticket id
+def create_branch(ticket, base=None):
+  global current_branch
+  (ticket_id, internal) = parse_ticket_id(ticket)
+
+  existing_branch = branch_from_ticket_id(ticket_id, internal)
+  if existing_branch is not None:
+    shell("git checkout " + existing_branch, "Found existing branch, checkouting " + existing_branch)
+    return
+
+  # get ticket info
+  issue = Issue(ticket)
+  print("* Found " + issue['type'] + " #" + str(issue.id) + ": " + issue['name'])
+  print("* Target: " + issue['version'])
+  print("* URL: " + Config.REDMINE_API_URL + "/issues/" + str(issue.id))
+
+  # Detect an existing PR
+  if 'pr' in issue:
+    print("Warning, a pull request already exists for this issue!")
+    print("Do you want to create a new branch from scratch or take over existing code?")
+    print("Type 'c' to create or 't' to takeover [c]:", end='')
+    sys.stdout.flush() # to display previous unfinished line
+    choice = sys.stdin.readline().strip().upper()
+    if choice == "T":
+      takeover(ticket)
+      return
+    # else continue
+
+  # manage the original branch
+  if base is not None:
+    if re.match(r'^.\d*$', base):
+      # fetch base branch
+      branch_name = fetch_branch_from_ticket(base)
+    else:
+      branch_name = base
+    # checkout the new branch
+    shell("git checkout " + branch_name, "Checkouting the base branch " + branch_name)
+  else:
+    # Look for release branch and ckeckout its last version
+    pull(issue['version'])
+
+  # Create the branch
+  current_branch = issue.branch_name()
+  shell("git checkout -b " + current_branch, "Creating branch " + current_branch)
+
+  # Set ticket's status
+  issue.to_in_progress()
+
+  print("")
+  print("# Now you can edit files")
+  print("# When you're ready, add them with git add")
+  print("# Then type:")
+  print(os.path.basename(sys.argv[0]) + " commit")
+  print("")
+
+
+# new version, changelog, commit
+def technique(version, message):
+  # check current directory
+  cwd = os.getcwd()
+  match = re.match(r'(.*)/techniques/(.*)', cwd)
+  if not re.match(r'.*/techniques/.*', cwd):
+    logfail("***** ERROR: You must be in a technique directory")
+    exit(7)
+  basedir = match.group(1)
+  techniquedir = match.group(2)
+  script = basedir + '/scripts/technique-files'
+  if not os.path.isfile(script):
+    logfail("***** ERROR: You must be in rudder-technique repository")
+    exit(7)
+  last_version = shell(script + " -ld .", keep_output=True).strip()
+  match = re.match(r'\./(\d+\.\d+)', last_version)
+  if not match:
+    logfail("***** ERROR: There must be at least one version of the technique in the current directory")
+    exit(7)
+  last_version = match.group(1)
+
+  # check next version
+  match = re.match(r'\d+\.\d+', version)
+  if not match:
+    logfail("***** ERROR: Version must be of the form x.y")
+    exit(7)
+  
+  # check branch info
+  info = ticket_from_branch(current_branch)
+
+  # new version
+  shell("cp -r " + last_version + " " + version, "Creating the version " + version)
+
+  # Deprecate old version
+  insert_line(last_version + "/metadata.xml",
+              r'\s*<TECHNIQUE name=',
+              "  <DEPRECATED>This technique version has been superseded by a new version. It will no longer be available in the next stable version of Rudder. Please upgrade to the latest version.</DEPRECATED>\n")
+  shell("git add " + last_version + "/metadata.xml", "Adding deprecated info to old version")
+
+  # changelog
+  locale.setlocale(locale.LC_TIME, 'C')
+  date = time.strftime("%c")
+  user = shell("git config --get user.name", keep_output=True).strip()
+  mail = shell("git config --get user.email", keep_output=True).strip()
+  changelog = " -- " + user + " <" + mail + "> " + date + "\n"
+  changelog += "  * Version " + version + "\n"
+  changelog += "  ** " + message + "\n"
+  with open(version + "/changelog", "a") as fd:
+    fd.write(changelog)
+
+  # maintained technique list
+  insert_line(basedir + "/maintained-techniques",
+              techniquedir + "/" + last_version,
+              techniquedir + "/" + version)
+  shell("git add " + basedir + "/maintained-techniques", "Adding maintained-techniques")
+
+  # commit
+  shell("git add " + version, "Adding next version")
+  technique = os.path.basename(cwd)
+  commit_cmd = "git commit -m \"Refs #" + str(info['id']) + ": Creation of " + technique + " version " + version + " from " + last_version + "\""
+  shell(commit_cmd, "Commiting")
+
+
+# clone ticket, change version, branch, helper
+def subtask(next_version, new_title, base=None, bug=False):
+  # make a clone child ticket with next version
+  if base is None:
+    issue = issue_from_branch(current_branch, False)
+  else:
+    issue = Issue(base, False)
+  if next_version is None:
+    if bug:
+      next_version = issue['version']
+      next_version_id = issue['version_id']
+    else:
+      next_version = get_next_version(issue['version'])
+      all_versions = get_versions()[0]
+      answer = ""
+      while answer not in all_versions:
+        print("You didn't specify --bug nor a specific version")
+        print("I assume that you are writing a patch for merging into next version")
+        print("Current version: " + issue['version'] + " Next version? ", end="")
+        print(all_versions, end="")
+        print(" (default " + next_version + "): ", end="")
+        sys.stdout.flush() # to display previous unfinished line
+        answer = sys.stdin.readline().strip()
+        if answer == "":
+          answer = next_version
+      next_version = answer
+      next_version_id = get_versions()[1][next_version]
+  else:
+    next_version_id = get_versions()[1][next_version]
+  print("Next version will be " + str(next_version))
+  print("Cloning ticket #" + issue.name)
+  new_issue = issue.clone(next_version_id, new_title, bug)
+  print(" > ticket #" + str(new_issue.id) + " created " + Config.REDMINE_API_URL + "/issues/" + str(new_issue.id))
+
+  # test merge status
+  pull(next_version)
+  logs = shell("git log --no-merges '--grep=Fixes #" + str(issue.id) + "' --oneline", "Looking for ticket commit in " + next_version, keep_output=True)
+
+  # rudder-dev branch
+  # if branch has been merged, just do a regular branch
+  if len(logs) != 0:
+    create_branch(new_issue.name)
+  # if branch has not been merged, base the ticket on the original
+  else:
+    create_branch(new_issue.name, current_branch)
+  
+    # rebase to next_version
+    next_branch = branch_from_version(next_version)
+    shell("git rebase -i " + next_branch, "Rebasing to " + next_version)
+
+ 
+# commit, push
+def wip():
+  # must be on a working branch
+  issue = issue_from_branch(current_branch)
+  commit_push(current_branch, "Work in progress")
+  url = "https://github.com/{user}/{repo}/commit/{commit}"
+  user = get_github_user()
+  repo = remote_repo()
+  commit = shell("git rev-parse HEAD", keep_output=True).strip()
+  # add a wip comment on the issue to find it later
+  commit_url = url.format(user=user, repo=repo, commit=commit)
+  issue.update(message="Work in progess here: " + commit_url)
+  print("You can find the commit here: " + commit_url)
+
+
+# open a quickfix issue then and link it
+def quick_fix_pr(pr_url, trigraph=None, merge=False):
+  # find PR
+  pr = PR(pr_url)
+  # get infos
+  title = pr.title()
+  version = version_from_branch(pr.base_branch())
+  version_id = get_versions()[1][version]
+  lifecycle = get_lifecycle()
+  if 'project_id' not in lifecycle:
+    logfail("Cannot guess redmine project, cannot open an issue")
+    exit(3)
+  project_id = lifecycle['project_id']
+  # open issue
+  server = Redmine(False)
+  issue = server.create_issue(project_id, title, "Automatically opened by rudder-dev", Config.BUG_TACKER_ID, version_id)
+  print("Opened issue #" + str(issue.id))
+  # set pr url
+  issue.update(pr_url=pr_url)
+  # add issue to pr
+  pr.comment(issue.url());
+  # Take over the issue
+  takeover(issue.name)
+  # commit
+  if merge and trigraph is None:
+    trigraph = "BPE" # or anywone willing to needlessly receive a mail
+  commit(trigraph)
+  # close original pr
+  new_issue = Issue(issue.name) # same as the other one but updated
+  pr.close("Superseded by " + new_issue['pr'])
+  # merge
+  if merge:
+    new_pr = PR(new_issue['pr'])
+    new_pr.label(Config.PR_VALIDATED_LABEL)
+
+
+# open a type issue then and resolve it
+def quick_fix_local(filename, subject, trigraph=None):
+  print("Local fix not yet implemented")
+  exit(1)
+
+
+# Commit, push, create pull-request, update ticket
+def commit(trigraph=None, message=None):
+  info = ticket_from_branch(current_branch)
+  master_branch = branch_from_version(info['version'])
+
+  # commit and push
+  if info['private']:
+    title = ''
+  else:
+    title = info['name'].replace("\"", "\\\"")
+  commit_push(current_branch, "Fixes #" + str(info['id']) + ": " + title)
+
+  # create PR
+  pr_url = create_pr(master_branch, info, message)
+  print("PR URL: " + str(pr_url))
+
+  # update ticket
+  if Config.REDMINE_TOKEN is not None:
+    if can_modify_issues(info['project_id']):
+      user = ask_username(info['project_id'], trigraph)
+    else:
+      user = None
+    print("Updating ticket #" + str(info['id']))
+    ticket_to_TR(info, user, pr_url, message)
+    print("Ticket updated: " + Config.REDMINE_API_URL + "/issues/" + info['id'])
+  else:
+    print("You can now update the ticket here " + Config.REDMINE_API_URL + "/issues/" + info['id'])
+
+
+# amend commit, push -f, comment PR
+def amend(comment=None):
+  issue = issue_from_branch(current_branch)
+
+  # Remove labels to avoid a direct merge by quality-assistant
+  if 'pr' in issue and issue['pr'] != '':
+    pr = PR(issue['pr'])
+    pr.unlabel(Config.PR_VALIDATED_LABEL)
+    pr.unlabel(Config.BOT_CANNOT_MERGE_LABEL)
+  
+  # commit over last commit and push
+  if issue['private']:
+    title = ''
+  else:
+    title = issue['name'].replace("\"", "\\\"")
+  commit_push(current_branch, "Fixes #" + str(issue.id) + ": " + title, True)
+
+  # reassign ticket
+  if 'last_assignee' in issue:
+    issue.update(user_id=issue['last_assignee'], status=Config.PENDING_TR_CODE)
+
+  # Message on PR if there is one
+  if 'pr' in issue and issue['pr'] != '':
+    update_pr(issue['pr'], "Commit modified", comment)
+    print("Done, you can see the PR here: " + issue['pr']) 
+  else:
+    print("No PR found.")
+
+
+# rebase, push -f, comment PR
+def rebase(comment=None, base=None):
+  issue = issue_from_branch(current_branch)
+
+  # Remove labels to avoid a direct merge by quality-assistant
+  if 'pr' in issue and issue['pr'] != '':
+    pr = PR(issue['pr'])
+    pr.unlabel(Config.PR_VALIDATED_LABEL)
+    pr.unlabel(Config.BOT_CANNOT_MERGE_LABEL)
+  
+  # fetch before rebasing
+  if base is not None:
+    if re.match(r'^.\d*$', base):
+      # base branch from ticket id
+      branch_name = fetch_branch_from_ticket(base)
+    else:
+      # base branch from branch name
+      branch_name = base
+  else:
+    # base branch from upstream repository
+    shell("git fetch --force " + Config.UPSTREAM_REPOSITORY, "Fetching upstream " + Config.UPSTREAM_REPOSITORY)
+    origin_branch = branch_from_version(issue['version'])
+    branch_name = Config.UPSTREAM_REPOSITORY + "/" + origin_branch
+
+  # First rebase without commits from source branch
+  # This is necessary because we may have modified the original commit and force pushed it
+  with NamedTemporaryFile(delete=False) as tmpscript:
+    script = """#!/bin/sh
+perl -i -ne "print unless s/^pick \w+ Fixes #(?!%(ticket)s)//" "$1"
+""" % { "ticket": str(issue.id)}
+    tmpscript.write(script.encode("utf-8"))
+    tmpscript.close()
+    os.system("chmod +x " + tmpscript.name)
+    # If it fails, let the interactive rebase try to fix it
+    shell("EDITOR=" + tmpscript.name + " git rebase -i " + branch_name, "First rebase to remove parent commits (EDITOR keeps only  \"pick Fixes #" + str(issue.id) + "\" lines)", fail_exit=False)
+    os.unlink(tmpscript.name)
+
+
+  # Then interactive rebase
+  shell("git rebase -i " + branch_name, "Rebasing")
+
+  # if OK: continue
+  shell("git push --force " + Config.OWN_REPOSITORY + " " + current_branch, "Pushing rebased branch")
+
+  # reassign ticket
+  if 'last_assignee' in issue:
+    issue.update(user_id=issue['last_assignee'])
+
+  # Message on PR if there is one
+  if 'pr' in issue and issue['pr'] != '':
+    update_pr(issue['pr'], "PR rebased", comment)
+    print("Done, you can see the PR here: " + issue['pr'])
+  else:
+    print("No PR found.")
+
+
+# close PR, rebase, push -f, create PR, update ticket
+def retarget(version=None):
+  info = ticket_from_branch(current_branch)
+
+  # update ticket if required
+  if version is not None:
+    print("Changing target version in the ticket to " + version)
+    update_ticket_version(info, version)
+    print("New version " + info['version'])
+
+  ticket_branch = branch_from_version(info['version'])
+
+  if 'pr' in info and info['pr'] != '':
+    upstream_branch = get_pr_upstream(info['pr'])
+    if ticket_branch == upstream_branch:
+      print("Ticket branch and PR branch match (" + upstream_branch + "), no need to retarget!")
+      return
+
+  # fetch before rebasing
+  shell("git fetch " + Config.UPSTREAM_REPOSITORY, "Fetching upstream " + Config.UPSTREAM_REPOSITORY)
+
+  # interactive rebase
+  shell("git rebase -i " + Config.UPSTREAM_REPOSITORY + "/" + ticket_branch, "Rebasing")
+
+  if 'pr' in info and info['pr'] != '':
+    # if OK: continue
+    shell("git push --force " + Config.OWN_REPOSITORY + " " + current_branch, "Pushing rebased branch")
+
+    # create new PR 
+    pr_url = create_pr(ticket_branch, info, "Replacing previous PR: " +  info['pr'])
+
+    if pr_url:
+      # close old PR
+      close_pr(info['pr'], "PR replaced by " + pr_url)
+
+      # update ticket
+      user = None
+      if 'last_assignee' in info:
+        user = info['last_assignee']
+      ticket_to_TR(info, user, pr_url)
+      print("New PR URL: " + pr_url)
+
+
+# ckeckout version, pull
+def pull(version=None):
+  global current_branch
+  if version is not None:
+    branch = branch_from_version(version)
+
+    # branch if needed
+    branch_status = shell("git branch --list " + branch, keep_output=True).strip()
+    if branch_status == "":
+      shell("git fetch " + Config.UPSTREAM_REPOSITORY, "Local branch doesn't exist, fetching from " + Config.UPSTREAM_REPOSITORY)
+      remote_branch_status = os.popen("git branch --no-color --list --remote " + Config.UPSTREAM_REPOSITORY + "/" + branch)
+      if remote_branch_status == "":
+        logfail("No such branch on " + Config.UPSTREAM_REPOSITORY + ": " + branch + ", Aborting ...")
+        exit(8)
+      shell("git branch --track " + branch + " " + Config.UPSTREAM_REPOSITORY + "/" + branch, "Creating local branch")
+
+    # checkout if needed
+    if branch != current_branch:
+      shell("git checkout " + branch, "Checkouting " + branch)
+    current_branch = branch
+
+  # Pull
+  branch_detail = shell("git rev-parse --abbrev-ref --symbolic-full-name @{u}", keep_output=True).strip()
+  if re.match(Config.UPSTREAM_REPOSITORY + '/.*', branch_detail):
+    shell("git pull --ff-only", "Pulling on " + branch_detail)
+  else:
+    logfail("Your branch is not based on the same " + Config.UPSTREAM_REPOSITORY + " branch")
+    exit(8)
+
+
+# clone from NRM, fork, add OWN, set-upstream
+def clone(name, fork=False):
+  token = get_github_token(can_fail=True)
+  if token is not None and Config.REMOTE_PROTOCOL == 'ssh':
+    url = "git@github.com:Normation/"
+  else:
+    url = "https://github.com/Normation/"
+  shell("git clone --origin " + Config.UPSTREAM_REPOSITORY + " " + url + name + ".git", "Cloning Normation repository")
+  if fork:
+    os.chdir(name)
+    github_fork()
+
+
+# takevover a ticket with an existing PR
+def takeover(ticket):
+  global current_branch
+  issue = Issue(ticket)
+
+  (ticket_id, internal) = parse_ticket_id(ticket)
+  existing_branch = branch_from_ticket_id(ticket_id, internal)
+  if existing_branch is not None:
+    logfail("***** ERROR: Can't take over a ticket with a matching branch already existing in your repository")
+    exit(12)
+
+  # fetch base branch
+  current_branch = fetch_branch_from_issue(issue)
+
+  # checkout the new branch
+  shell("git checkout " + current_branch, "Checkouting the base branch " + current_branch)
+
+  # same workflow as work in progress (but with an existing commit)
+  commit_push(current_branch, "Work in progress", True)
+
+  # Set ticket's status
+  issue.to_in_progress("I'm taking over this issue!")
+
+  print("")
+  print("# Now you can edit files")
+  print("# When you're ready, add them with git add")
+  print("# Then type:")
+  print(os.path.basename(sys.argv[0]) + " commit")
+  print("")
+
+
+# Merge remote version
+first_merge=True
+def merge_version(old, new, strategy=None, automatic=False, test=False, run_tests=True):
+  global current_branch
+  pull(old)
+  branch = branch_from_version(old)
+  if test and not first_merge:
+    test_branch = old + "_test"
+    shell("git checkout " + test_branch)
+    branch = test_branch
+    current_branch = test_branch
+  merge_branch(branch, new, strategy, automatic, old, test, run_tests)
+
+# Merge remote branch
+def merge_branch(old, new, strategy=None, automatic=False, name="", test=False, run_tests=True):
+  global first_merge, current_branch
+  pull(new)
+  opts = ""
+  if strategy is not None:
+    if strategy.startswith("upto_"):
+      match = re.match(r'upto_(.*)', strategy)
+      # Use "ours" strategy if are jut after the limit
+      if old == branch_from_version(match.group(1)):
+        opts = " -s ours"
+      # no need for option otherwise: either we are before -> default option, or we are after and there should be nothing to merge
+    else:
+      opts = " -s " + strategy
+  if automatic:
+    opts += " --no-edit "
+  if test:
+    test_branch = new + "_test"
+    shell("git branch -D " + test_branch + " 2>/dev/null || true")
+    shell("git checkout -b " + test_branch)
+    current_branch = test_branch
+  shell("git merge " + old + opts, "Merging " + name + " into " + new)
+  # run merge tests if there are some
+  if run_tests:
+    toplevel = shell("git rev-parse --show-toplevel", keep_output=True).strip()
+    if os.path.isfile(toplevel+"/"+Config.QA_TEST):
+      # cleanup the repo before tests
+      shell("git clean -f", "Cleanup repository")
+      (code, x, y) = shell('cd "' + toplevel + '" && ./' + Config.QA_TEST + " --merge", "Running merge tests", fail_exit=False)
+      if code != 0:
+        # signal a test error to the caller with a specific error code
+        exit(127)
+  first_merge = False
+  if not test:
+    shell("git push " + Config.UPSTREAM_REPOSITORY + " " + branch_from_version(new), "Pushing merged branch")
+
+
+# Merge remote version automatically guessing the next one
+def merge_to_next(old, strategy=None, automatic=False, test=False, run_tests=True):
+  new = get_next_version(old)
+  merge_version(old, new, strategy, automatic, test, run_tests)
+
+
+# Merge all versions to next one
+def merge_all(strategy=None, automatic=False, test=False, run_tests=True):
+  for version in get_versions()[0][:-1]:
+    merge_to_next(version, strategy, automatic, test, run_tests)
+
+# Merge given issue into its target branch and upmerge
+def merge_issue(issue_name=None, strategy=None, automatic=False, test=False, run_tests=True):
+  # get issue info
+  if issue_name is None:
+    issue = issue_from_branch(current_branch)
+  else:
+    issue = Issue(issue_name)
+  
+  if 'pr' not in issue or issue['pr'] == '':
+    logfail("There is no PR in this issue " + issue.name)
+    exit(15)
+  merge_pr(issue['pr'], strategy, automatic, test, run_tests)
+
+
+# Merge given PR into its target branch and upmerge
+def merge_pr(pr_url, strategy=None, automatic=False, test=False, run_tests=True):
+  pr = PR(pr_url)
+  # PR must be validated
+  if not test and not pr.is_labeled(Config.PR_VALIDATED_LABEL):
+    print("This PR is not labeled '" + Config.PR_VALIDATED_LABEL + "' You should not merge it.")
+    logfail("***** ERROR: PR is not validated. Exiting.")
+    if not Config.force:
+      exit(15)
+
+  # get merge info
+  pr_branch = fetch_branch_from_pr(pr)
+  version = version_from_branch(pr.base_branch())
+  if version is None:
+    logfail("**** ERROR: cannot guess version of branch " + pr.base_branch() + " Exiting.")
+    exit(15)
+  if not test:
+    # comment for the merge
+    pr.comment("""OK, merging this PR""")
+  # regular merge
+  merge_branch(pr_branch, version, strategy, automatic, pr.repo()+":"+pr.remote_branch(), test, run_tests)
+  # upmerge
+  last_version = get_versions()[0][-1]
+  while version != last_version:
+    merge_to_next(version, strategy, automatic, test, run_tests)
+    version = get_next_version(version)
+
+
+# Revert commit from ticket passed as parameter, use retarget to keep changes on next branch  
+def revert(ticket, retarget = False):
+  (ticket_id, internal) = parse_ticket_id(ticket)
+  info = get_ticket_info(ticket_id, internal, False)
+
+  # Find merge commit id
+  if 'pr' in info and info['pr'] != '':
+    commit = get_pr_merge_commit(info['pr'])
+  else:
+    logfail("There is no pull request linked to that issue, abort reverting")
+    exit(1)
+
+  pull(info['version'])
+  # If we retarget a change, we want only this change to be reverted, so ensure we have already merged the branch correctly
+  if retarget: 
+    merge_to_next(info['version'])
+  
+  # Reverting
+  shell("git revert -m1 " + commit, "Reverting issue #" + info["id"] + ":" + info["name"]+ ", commit: " + commit  )
+  shell("git push " + Config.UPSTREAM_REPOSITORY, "Updating " + Config.UPSTREAM_REPOSITORY)
+
+  # If we retarget that issue, merge it with ours strategy so the chnage is still present in next version 
+  if retarget: 
+    merge_to_next(info['version'], "ours")
+
+
+# Run a command on all branches
+def find(command):
+  status = {}
+  for branch in get_versions()[0]:
+    pull(branch)
+    (status[branch], x, y) = shell(command, "Running your command", fail_exit=False)
+  print("---")
+  for branch in  get_versions()[0]:
+    ok = "OK" if status[branch] == 0 else "ERR"
+    print("%6s: %3s (%d)" % (branch, ok, status[branch]))
+  print("---")
+
+
+# cleanup branches
+def cleanup(more=False, dry=False):
+  shell("git fetch " + Config.UPSTREAM_REPOSITORY, "Fetching " + Config.UPSTREAM_REPOSITORY)
+  pull('master') # necessary to avoid removal errors
+  branch_list = shell("git branch --no-color --no-column", keep_output=True)
+  for branch in branch_list.splitlines():
+    m = re.match(r'^\s*((?:bug|dev|int|impl|ust|UST)_(\d+)/.*)\s*$', branch)
+    if m:
+      branch=m.group(1)
+      ticket_id = m.group(2)
+      print("#" + ticket_id + ": ", end='')
+      tickets_req = requests.get(Config.REDMINE_API_URL + "/issues/" + str(ticket_id) + ".json", headers = {'X-Redmine-API-Key': Config.REDMINE_TOKEN, 'Content-Type': 'application/json' })
+      remove = False
+
+      # guess if we should remove the branch
+      if tickets_req.status_code == requests.codes.ok:
+        ticket = tickets_req.json()['issue']
+        # The ticket is closed -> probably
+        if ticket['status']['id'] in Config.REDMINE_CLOSED_STATUSES:
+          print("ticket closed, ", end='')
+          version = get_version(ticket, False)
+          should_ask = False
+          if version is not None:
+            upstream = Config.UPSTREAM_REPOSITORY + '/' + branch_from_version(version)
+            (code, cherry_list) = shell("git cherry " + upstream + " " + branch + " 2>/dev/null", keep_output=True, fail_exit=False)
+            if code == 0 and cherry_list == "":
+              # Everything is merged -> YES
+              print("commits merged upstream, ", end='')
+              remove = True
+            else:
+              # Some commits mays not have been merged -> Ask the user
+              print("some commits not merged upstream, ", end='')
+              should_ask = True
+          else:
+            # Can't find upstream branch -> ask the user
+            print("can't check upstream branch from ticket, ", end='')
+            should_ask = True
+          if more and should_ask:
+            print(Config.REDMINE_API_URL + "/issues/" + ticket_id)
+            print("Do you want to remove it ? [y/N]", end='')
+            sys.stdout.flush() # to display previous unfinished line
+            answer = sys.stdin.readline().strip().upper()
+            if answer.upper() == "Y":
+              remove = True
+        # The ticket is open -> NO
+      
+      if remove:
+        print("removing: " + branch)
+        if not dry:
+          shell("git branch -d " + branch, "Deleting local " + branch)
+          shell("git push " + Config.OWN_REPOSITORY + " --delete " + branch, "Deleting remote " + branch, fail_exit=False)
+      else:
+        print("keeping: " + branch)
+
+
+def update():
+  my_path = os.path.abspath(__file__)
+  with open(my_path, 'r') as fd:
+    my_text = fd.read()
+
+  data = requests.get(Config.RUDDER_DEV_ORIGIN)
+  if data.status_code != requests.codes.ok:
+    logfail("Cannot get last version of rudder-dev sorry!")
+    exit(14)
+  new_text = data.text
+
+  # No update needed
+  if my_text == new_text:
+    print("No update needed!")
+    (code, x, y) = shell("touch '" + my_path + "'", "Trying touch to avoid warnings", fail_exit=False)
+    if code != 0:
+      shell("sudo touch '" + my_path + "'", "Trying sudo touch to avoid warnings")
+    exit(0)
+
+  # Try to update rudder-dev with our access rights
+  try:
+    with open(my_path, 'w') as fd:
+      fd.write(new_text)
+  except Exception as e:
+    # Try with sudo instead
+    shell("cat <<'EOF' | sudo tee '" + my_path + "' > /dev/null \n" + new_text + "\nEOF\n")
+
+  print("rudder-dev has been updated, well done!")
+
+
+def check_update():
+  my_path = os.path.abspath(__file__)
+  # mtime = last modification = content changed
+  ctime = os.path.getmtime(my_path)
+  days_ago = (time.time() - ctime) / 60 / 60 / 24
+  if days_ago > Config.WARN_FOR_UPDATE_AFTER:
+    print("Your version of rudder-dev is old and probably needs an update, please run 'rudder-dev update'")
+  # else everything is up to date
+
+
+def blame(filename, long_format, before_commit, changed_from):
+  commit_opt = ""
+  if before_commit is not None:
+    commit_opt = before_commit + "^1"
+  reverse_opt = ""
+  if changed_from is not None:
+    reverse_opt = "--reverse " + changed_from + "..HEAD"
+    # get ordered list of commit id
+    commits = shell("git log --oneline --abbrev=7", keep_output=True) # abbrev used is +1 in git blame !!
+    commit_list = commits.split("\n")
+    commit_list = [ x.split(' ',1)[0] for x in commit_list ] 
+  blame = shell("git blame -s -w --abbrev=6 " + reverse_opt + " " + filename + " " + commit_opt, "Blaming file " + filename, keep_output=True)
+  output = ""
+  for line in blame.split('\n'):
+    # extract commit id
+    match = re.search(r'([0-9a-f]+?) (.*)', line)
+    if match:
+      commit_id = match.group(1)
+      if commit_id == "0000000":
+        log = "new"
+      else:
+        if changed_from is not None:
+          # in reverse mode, git returns the previous commit, so replace it with the next one
+          commit_index = commit_list.index(commit_id)
+          if commit_index == 0:
+            # we are on the last commit, so the line has never been changed
+            log = "never"
+            commit_id = "never"
+          else:
+            commit_id = commit_list[commit_list.index(commit_id)-1]
+            log = shell("git show --oneline -s " + commit_id, keep_output=True).strip()
+        else:
+          log = shell("git show --oneline -s " + commit_id, keep_output=True).strip()
+      # format the log line and add it to the blame 
+      if long_format:
+        output += "%-65.65s %s\n" % (log, match.group(2))
+      else:
+        m = re.search(r'^([0-9a-f]+?) (Fixes|Merge|Ref).*?(\d{4,})', log)
+        if m:
+          logtype = ""
+          if m.group(2) == "Fixes":
+            logtype = "F"
+          if m.group(2) == "Ref":
+            logtype = "R"
+          if m.group(2) == "Merge":
+            logtype = "M"
+          logline = m.group(1) + " " + logtype + " #" + m.group(3)
+        else:
+          logline = commit_id
+        output += "%-16.16s %s\n" % (logline, match.group(2))
+  print(output)
+
+
+# Main loop
+if __name__ == "__main__":
+  arguments = docopt.docopt(__doc__)
+  read_configuration("rudder-dev")
+
+  # smart argument
+  smart = arguments['<smart_arg>']
+  arguments['back'] = False
+  if smart:
+    if smart == '-':
+      arguments['back'] = True
+    elif re.match(r'^i?\d{2,5}$', smart):
+      arguments['branch'] = True
+      arguments['<ticket_id>'] = smart
+    elif re.match(r'^\d\.(\d+|x)$|^master$', smart):
+      arguments['pull'] = True
+      arguments['<branch>'] = smart
+    elif re.match(r'^[A-Z]{3}$', smart):
+      arguments['commit'] = True
+      arguments['<trigraph>'] = smart
+    else:
+      logfail("Error, unknown <smartarg> " + smart)
+      exit(10)
+
+  # Force argument is a global variables
+  Config.force = arguments['-f'] or arguments['--force']
+
+  if not arguments['clone']: # this is the only exception
+    # check repository and get common info
+    (code, current_branch, error) = shell("git rev-parse --abbrev-ref HEAD", keep_output=True, fail_exit=False)
+    current_branch = current_branch.strip()
+    if code != 0:
+      logfail("***** ERROR: Unable to get the current git branch name, this directory is probably not a git repository")
+      exit(11)
+
+  # check if update is needed
+  check_update()
+
+  # standard arguments
+  if arguments['back']:
+    last_branch = get_cache_info("last_branch", remote_repo())
+    if last_branch is None:
+      logfail("***** ERROR: No last branch recorded.")
+      exit(16)
+    stash()
+    shell("git checkout " + last_branch)
+    stashed=True # automatically unstash previous work
+    unstash()
+  elif arguments['clone']:
+    clone(arguments['<repository_name>'], arguments['--fork'])
+  elif arguments['pull']:
+    stash()
+    pull(arguments['<branch>'])
+    unstash()
+    stash_info()
+  elif arguments['branch']:
+    stash()
+    create_branch(arguments['<ticket_id>'], arguments['--base'])
+    unstash()
+    stash_info()
+  elif arguments['quickfix']:
+    arg = arguments['<pr_url/file>']
+    if arg.startswith("http"):
+      # subject / trigraph is for documentation, docopt makes no difference
+      if arguments['<trigraph>'] is not None:
+        logfail("You must not pass subject for an existing PR fix")
+        exit(3)
+      quick_fix_pr(arg, arguments['<subject>'], arguments['--merge'])
+    else:
+      if arguments['--merge']:
+        logfail("You cannot merge your own quickfix")
+        exit(3)
+      quick_fix_local(arg, arguments['<subject>'], arguments['<trigraph>'])
+  elif arguments['technique']:
+    technique(arguments['<version>'], arguments['<comment>'])
+  elif arguments['subtask']:
+    subtask(arguments['<next_branch>'], arguments['--title'], arguments['--base'], arguments['--bug'])
+  elif arguments['wip']:
+    wip()
+  elif arguments['commit']:
+    commit(arguments['<trigraph>'], arguments['<PR_comment>'])
+  elif arguments['amend']:
+    amend(arguments['<PR_comment>'])
+  elif arguments['rebase']:
+    rebase(arguments['<PR_comment>'], arguments['--base'])
+  elif arguments['retarget']:
+    retarget(arguments['<target_version>'])
+  elif arguments['takeover']:
+    stash()
+    takeover(arguments['<ticket_id>'])
+    unstash()
+    stash_info()
+  elif arguments['revert']:
+    revert(arguments['<ticket_id>'], arguments['--retarget'])
+  elif arguments['merge']:
+    stash()
+    before_merge_branch = current_branch
+    automatic = arguments['-a'] or arguments['--automatic']
+    test = arguments['-t'] or arguments['--test']
+    run_tests = not ( arguments['-n'] or arguments['--no-qa-test'] )
+    if arguments['all']: # rudder-dev merge all
+      merge_all(arguments['<strategy>'], automatic, test, run_tests)
+    elif arguments['<first_branch>'] is not None: # rudder-dev merge first next
+      merge_version(arguments['<first_branch>'], arguments['<next_branch>'], arguments['<strategy>'], automatic, test, run_tests)
+    elif arguments['<first_branch/ticket_id/pr_url>'] is None: # rudder-dev merge
+      merge_issue(strategy=arguments['<strategy>'], automatic=automatic, test=test, run_tests=run_tests)
+    elif re.match(r'^i?\d{3,}$', arguments['<first_branch/ticket_id/pr_url>']): # 3+ digits -> ticket_id: rudder-dev merge ticket_id
+      merge_issue(arguments['<first_branch/ticket_id/pr_url>'], arguments['<strategy>'], automatic, test, run_tests)
+    elif re.match(r'^https?://', arguments['<first_branch/ticket_id/pr_url>']): # starts with http:// -> pr_url: rudder-dev merge pr
+      merge_pr(arguments['<first_branch/ticket_id/pr_url>'], arguments['<strategy>'], automatic, test, run_tests)
+    else: # rudder-dev merge first
+      merge_to_next(arguments['<first_branch/ticket_id/pr_url>'], arguments['<strategy>'], automatic, test)
+    shell("git checkout " + before_merge_branch, "Going back to the branch we were before merge")
+    unstash()
+  elif arguments['find']:
+    find(arguments['<command>'])
+  elif arguments['cleanup']:
+    cleanup(arguments['--more'], arguments['-n'] or arguments['--dry-run'])
+  elif arguments['update']:
+    update()
+  elif arguments['blame']:
+    blame(arguments['<file>'], arguments['--long'], arguments['--before'], arguments['--changed-after'])
+

@@ -1,0 +1,305 @@
+#!/usr/bin/env python
+# coding: utf8
+
+"""
+Dashboard for Rudder developpers.
+
+This tool shares its configuration file with rudder-dev.
+
+Usage:
+    rudder-dashboard
+"""
+
+from __future__ import print_function
+import json
+import os
+import re
+import dateutil.parser
+import sys
+from time import time
+from datetime import tzinfo, timedelta, datetime
+from pprint import pprint
+
+import requests # apt-get install python-requests || pip install requests
+import docopt # apt-get install python-docopt || pip install docopt
+
+try: # python 2 / 3
+  from urllib import urlencode
+except ImportError:
+  from urllib.parse import urlencode
+try:
+  import configparser
+  config = configparser.ConfigParser()
+except ImportError:
+  import ConfigParser
+  config = ConfigParser.ConfigParser()
+        
+CONFIG_FILE = "~/.rudder-dev"
+
+MAX_DAYS = 7 
+
+GITHUB_URL = "https://api.github.com"
+REDMINE_API_URL = "https://www.rudder-project.org/redmine"
+REDMINE_ALT_API_URL = "https://redmine.normation.com"
+REDMINE_MY_ID = "me"
+REDMINE_ALT_MY_ID = "me"
+
+REDMINE = {}
+REDMINE['default'] = { "url": "https://www.rudder-project.org/redmine",
+                       "id": "me",
+                       "token": "",
+                       "status_review": "3|10", # 3=TR, 10=FR
+                       "status_todo": "1|9|4", # 1=New, 9=In Progess, 4=Discussion
+                       "priority_max": "7", # 7=1
+                       "tracker_bug": "1",
+                       "users_normation": "196|170|5|6|192|9|4|146|34",
+                     }
+REDMINE['alt'] =     { "url": "https://redmine.normation.com",
+                       "id": "me",
+                       "token": "",
+                       "status_review": "3|10", # 3=TR, 10=FR
+                       "status_todo": "1|8|2|9|4", # 1=New, 8=Qualified, 2=To be started, 9=In Progess, 4=Discussion
+                       "priority_max": "7", # 7=1
+                       "tracker_bug": "1",
+                       "users_normation": "*",
+                     }
+REQUEST_TIMEOUT=2
+
+# Read rudder configuration from ~/.rudder-dev
+def read_configuration():
+  global GITHUB_TOKEN, REDMINE_TOKEN, REDMINE_ALT_TOKEN
+
+  # Detect missing configuration
+  if not os.path.isfile(os.path.expanduser(CONFIG_FILE)):
+    print(CONFIG_FILE + " doesn't exist !")
+    exit(5)
+
+  # Read configuration
+  config.read(os.path.expanduser(CONFIG_FILE))
+  GITHUB_TOKEN = get_config("github_token", None)
+  REDMINE_TOKEN = get_config("redmine_token", None)
+  REDMINE_ALT_TOKEN = get_config("redmine_alt_token", None)
+
+
+# Get a configuration item from current configuration file
+def get_config(item, error):
+  try:
+    return config.get("default", item)
+  except:
+    if error is None:
+      return None
+    else:
+      print(error)
+      exit(5)
+
+
+def get_issues(args, limit, internal=False):
+  global REDMINE_URL
+  if internal:
+    REDMINE_URL = REDMINE_ALT_API_URL
+    token = REDMINE_ALT_TOKEN
+  else:
+    REDMINE_URL = REDMINE_API_URL
+    token = REDMINE_TOKEN
+  query = urlencode(args)
+  try:
+    tickets_req = requests.get(REDMINE_URL + "/issues.json?limit=" + str(limit) + "&" + query, timeout=REQUEST_TIMEOUT,
+                               headers = {'X-Redmine-API-Key': token, 'Content-Type': 'application/json' })
+  except requests.exceptions.Timeout:
+    print("Timout connecting to " + REDMINE_URL, file=sys.stderr)
+    return {'issues': [], 'total_count': 0}
+  if tickets_req.status_code != requests.codes.ok:
+    print("Warning: could not access " + REDMINE_URL)
+    return None
+  return tickets_req.json()
+
+
+def get_issues_list(args, internal=False):
+  issues = get_issues(args, 100, internal)
+  if issues is None:
+    return []
+  # extract PR
+  for i in issues['issues']:
+    if 'custom_fields' in i:
+      for field in i['custom_fields']:
+        if field['name'] == 'Pull Request' and 'value' in field:
+          i['PR'] = field['value']
+    if 'PR' not in i:
+      i['PR'] = None
+  return [ { "label": i['subject'], "url": REDMINE_URL+"/issues/"+str(i['id']), "PR": i['PR'] } 
+           for i in issues['issues'] ]
+
+
+def get_issues_count(args, internal=False):
+  issues = get_issues(args, 1, internal)
+  if issues is None:
+    return 0
+  return issues['total_count']
+
+
+def format_full(name, items):
+  if len(items) == 0:
+    print(name + ": 0  Good!")
+  else:
+    count = len(items)
+    if count >=100:
+      print(name + ": " + str(len(items)) + " (or more)")
+    else:
+      print(name + ": " + str(len(items)))
+    for i in items:
+      print("  " + i['url'] + " " + i['label'])
+
+
+def format_count(name, count, url):
+  print(name + ": " + str(count) + " ")
+  #print("  " + url)
+
+
+def get_hub(query):
+  if re.match(r'^https:.*', query):
+    url = query
+  else:
+    url = GITHUB_URL + query
+  try:
+    ret = requests.get(url, headers = {'Authorization': 'token ' + GITHUB_TOKEN, 'Content-Type': 'application/json' }, timeout=REQUEST_TIMEOUT)
+  except requests.exceptions.Timeout:
+    print("Timout connecting to " + GITHUB_URL, file=sys.stderr)
+    return {}
+  return ret.json()
+
+
+# extend issue with info on PR since github does return
+# all data available in any of the queries
+def pr_info(issue):
+  info = get_hub(issue['pull_request']['url'])
+  issue.update(info)
+  return issue
+
+def my_prs():
+  pulls = get_hub('/orgs/Normation/issues?filter=created')
+  # p['title'], p['pull_request']['html_url'], p['pull_request']['url']
+  return [ pr_info(p) for p in pulls if 'pull_request' in p ]
+
+
+def get_redmine_info(redmine, key):
+  if key in REDMINE[redmine]:
+    return REDMINE[redmine][key]
+  return key
+
+def filter_instance(issue_filter, redmine='default'):
+  new_filter = {}
+  for key,value in issue_filter.items():
+    new_filter[key] = get_redmine_info(redmine, value)
+  return new_filter
+
+def format_issues(text, issue_filter, view="count", url="", redmine="all"):
+  if view == "count":
+    count = 0
+    if redmine == "all" or redmine == "external":
+      count += get_issues_count(filter_instance(issue_filter))
+    if redmine == "all" or redmine == "internal":
+      count += get_issues_count(filter_instance(issue_filter, 'alt'), True)
+    format_count(text, count, url)
+  elif view == "full" or view == "full-pr":
+    issues = []
+    if redmine == "all" or redmine == "external":
+      issues.extend( get_issues_list(filter_instance(issue_filter)) )
+    if redmine == "all" or redmine == "internal":
+      issues.extend( get_issues_list(filter_instance(issue_filter, 'alt'), True) )
+    if view == "full":
+      format_full(text, issues)
+    if view == "full-pr":
+      format_full(text, [ { "label": i['label'], "url": i['PR'] or i["url"]} for i in issues ])
+  else:
+    print("BUG: unknown view type " + view)
+    exit(127)
+
+
+ZERO = timedelta(0)
+class UTC(tzinfo):
+  def utcoffset(self, dt):
+    return ZERO
+  def tzname(self, dt):
+    return "UTC"
+  def dst(self, dt):
+    return ZERO
+
+utc = UTC()
+def date_diff(date1):
+  d1 = dateutil.parser.parse(date1)
+  d2 = datetime.now(utc)
+  return (d2-d1).days
+
+
+if __name__ == "__main__":
+  read_configuration()
+# PERSONAL overview
+  # My TR + FR
+  format_issues("My reviews", {"assigned_to_id": "id", "status_id": "status_review"}, "full-pr")
+  
+  # My PR
+  pulls = my_prs()
+  self_merge = [ { "label": p['title'], "url": p['html_url']}
+                 for p in pulls
+                 if 'labels' in p and "qa: Can't merge" in map(lambda x:x['name'], p['labels'])
+               ]
+  format_full("My need merging PR", self_merge)
+
+  unmergeable = [ { "label": p['title'], "url": p['html_url']} for p in pulls if p['mergeable'] == False]
+  format_full("My unmergeable PR", unmergeable)
+
+  old = [ {"label": p['title'], "url": p['html_url']} for p in pulls if date_diff(p['updated_at']) > MAX_DAYS ]
+  format_full("My old PR without update", old)
+
+  # My issues with priority 1
+  format_issues("My high priority issues", {"assigned_to_id": "id", "status_id": "status_todo", "priority_id": "priority_max"})
+
+  # My bugs
+  format_issues("My bugs", {"assigned_to_id": "id", "tracker_id": "tracker_bug", "status_id": "status_todo"})
+
+# NORMATION overview
+  # Quick and important
+  format_issues("Quick and important", {"status_id": "status_todo", "tags": "Quick and important"}, "full", redmine="external")
+
+  # Assigned issues
+  format_issues("Assigned Issues", {"assigned_to_id": "*", "status_id": "status_review"}, "count",
+                "http://www.rudder-project.org/redmine/issues?utf8=%E2%9C%93&set_filter=1&f[]=status_id&op[status_id]=%3D&v[status_id][]=1&v[status_id][]=9&v[status_id][]=4&f[]=assigned_to_id&op[assigned_to_id]=*&f[]=&c[]=project&c[]=tracker&c[]=parent&c[]=status&c[]=priority&c[]=subject&c[]=author&c[]=assigned_to&c[]=category&c[]=fixed_version&group_by=")
+
+  # Unassigned issues
+  format_issues("Unassigned Issues", {"assigned_to_id": "!*", "status_id": "status_review"}, "count",
+                "http://www.rudder-project.org/redmine/issues?utf8=%E2%9C%93&set_filter=1&f[]=status_id&op[status_id]=%3D&v[status_id][]=1&v[status_id][]=9&v[status_id][]=4&f[]=assigned_to_id&op[assigned_to_id]=!*&f[]=&c[]=project&c[]=tracker&c[]=parent&c[]=status&c[]=priority&c[]=subject&c[]=author&c[]=assigned_to&c[]=category&c[]=fixed_version&group_by=")
+
+  # Issues assigned to an extern
+  format_issues("Issues not assigned to Normation", {"assigned_to_id": "users_normation", "status_id": "status_todo"}, "count")
+
+  # Assigned bugs
+  format_issues("Assigned Bugs", {"assigned_to_id": "*", "tracker_id": "tracker_bug", "status_id": "status_todo"}, "count",
+                "http://www.rudder-project.org/redmine/issues?utf8=%E2%9C%93&set_filter=1&f[]=status_id&op[status_id]=%3D&v[status_id][]=1&v[status_id][]=9&v[status_id][]=4&f[]=assigned_to_id&op[assigned_to_id]=*&f[]=tracker_id&op[tracker_id]=%3D&v[tracker_id][]=1&f[]=&c[]=project&c[]=tracker&c[]=parent&c[]=status&c[]=priority&c[]=subject&c[]=author&c[]=assigned_to&c[]=category&c[]=fixed_version&group_by=")
+
+  # Unassigned bugs
+  format_issues("Unassigned Bugs", {"assigned_to_id": "!*", "tracker_id": "tracker_bug", "status_id": "status_todo"}, "count",
+                "http://www.rudder-project.org/redmine/issues?utf8=%E2%9C%93&set_filter=1&f[]=status_id&op[status_id]=%3D&v[status_id][]=1&v[status_id][]=9&v[status_id][]=4&f[]=assigned_to_id&op[assigned_to_id]=!*&f[]=tracker_id&op[tracker_id]=%3D&v[tracker_id][]=1&f[]=&c[]=project&c[]=tracker&c[]=parent&c[]=status&c[]=priority&c[]=subject&c[]=author&c[]=assigned_to&c[]=category&c[]=fixed_version&group_by=")
+
+#  # PR waiting pas le même résultat -> Bug ?
+#  # https://github.com/issues?utf8=%E2%9C%93&q=is%3Apr+is%3Aopen+user%3ANormation+
+#  pulls = get_hub('/orgs/Normation/issues?filter=all')
+#  count = 0
+#  for pull in pulls:
+#    if 'pull_request' in pull:
+#      count +=1
+#  print("Waiting PR: " + str(count))
+
+# NORMATION details
+# ticket affecté a ou créé par un extérieur
+ # sans modif depuis plus de 1 semaine
+
+# bug affecté a un intérieur
+ # sans modif depuis plus de 1 mois
+
+# ticket en discussion ou en TR 
+ # sans modif depuis plus de 1 semaine
+
+# ticket sans catégorie
+
+# PR vers normation sans modif depuis 1 semaine
+# PR vrs normation non mergeables

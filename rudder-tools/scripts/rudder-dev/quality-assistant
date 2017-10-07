@@ -1,0 +1,313 @@
+#!/usr/bin/env python
+# coding: utf8
+
+"""
+Pull-request quality tool.
+
+You need a configuration file, if you don't have one, the tool will create one for you at first run.
+
+Usage:
+        quality-assistant -h|--help
+        quality-assistant merge all [--alt-dir] [-d|--debug] [-f|--force]
+        quality-assistant merge <repo> [--alt-dir] [-d|--debug] [-f|--force]
+        quality-assistant autolabel all [-d|--debug] [-f|--force]
+        quality-assistant autolabel <repo> [-d|--debug] [-f|--force]
+        quality-assistant pr-cleanup all [-d|--debug] [-f|--force]
+        quality-assistant pr-cleanup <repo> [-d|--debug] [-f|--force]
+
+Options:
+        alt-dir : after waiting on a lock, use alternate directory instead of failing
+
+        merge <repo>: merge all PR that are tagged "Ready for merge" for theis repo
+
+        merge all: do a merge on all known repositories
+
+        autolabel <repo>: create mandatory labels on github for this repo
+
+        autolabel all: create labels on github for all known repositories
+
+"""
+
+from __future__ import print_function
+
+import os
+import shutil
+import time
+import fcntl
+from datetime import datetime
+from dateutil.parser import parse
+from common import *
+from github import *
+from redmine import *
+from tempfile import *
+
+import docopt # apt-get install python-docopt || pip install docopt
+from pprint import pprint
+
+try:
+  import urllib3
+  urllib3.disable_warnings()
+except:
+  pass
+
+try:
+  requests.packages.urllib3.disable_warnings()
+except:
+  pass
+
+
+def clean_repo(repo, alt_dir):
+  redirect = ""
+  if Config.LOGLEVEL == "error":
+    redirect = " >/dev/null"
+
+  # check master directory
+  workdir = Config.WORKING_DIRECTORY
+  if not os.path.isdir(workdir):
+    logfail("Master directory doesn't exist, exiting")
+    exit(1)
+
+  # check working directory
+  directory = workdir + "/" + repo
+  if not os.path.isdir(directory):
+    os.chdir(workdir)
+    shell("rudder-dev clone "+repo+redirect, "Cloning "+repo+" in the master directory")
+
+  # check lock
+  lockfile = directory + "/qa.lock"
+  wait = Config.LOCK_TIMEOUT
+  fd = open(lockfile, 'w')
+  while wait > 0:
+    try:
+      fcntl.flock(fd,fcntl.LOCK_EX | fcntl.LOCK_NB)
+      break
+    except:
+      print("Lock present, remaining wait time : " + str(wait) + "s")
+      w = min(wait,5) # recheck lock every 5s
+      time.sleep(w)
+      wait -= 5
+  try:
+    fcntl.flock(fd,fcntl.LOCK_EX | fcntl.LOCK_NB)
+  except:
+    if alt_dir:
+      # since working directory is just a cache to speedup git, we can just create another one if needed
+      workdir = mkdtemp()
+      directory = workdir + "/" + repo
+      lockfile = directory + "/qa.lock"
+      os.chdir(workdir)
+      shell("rudder-dev clone "+repo+redirect, "Cloning "+repo+" in a temporary directory")
+    else:
+      print("Lockfile " + lockfile + " is present, stoping")
+      exit(1)
+
+  # cleanup working directory
+  os.chdir(directory)
+  shell("git clean -f -d -e qa.lock"+redirect, "Cleanup working directory")
+  shell("git reset --hard"+redirect, "Reset working directory")
+  return workdir
+
+
+def list_repositories():
+  repositories = get_config("repos", "No 'repositories' list in " + Config.CONFIG_FILE, section)
+  Config.REPOSITORIES = re.split(r'[ ,]+', repositories)
+
+
+def repo_merge(repo, alt_dir):
+  api_url = "https://api.github.com/repos/Normation/{repo}/issues?labels="+Config.PR_VALIDATED_LABEL
+  url = api_url.format(repo=repo)
+  data = github_call(url)
+  for pr_info in data:
+    labels = [l['name'] for l in pr_info['labels']]
+    if Config.BOT_CANNOT_MERGE_LABEL in labels and not Config.force:
+      if Config.LOGLEVEL == "debug" or Config.LOGLEVEL == "info":
+        print("Skipping " + pr_info['html_url'] + " : marked as can't merge")
+      continue
+    pr_merge(repo, pr_info['html_url'], alt_dir)
+
+
+def reassign(pr, status):
+  for title in  pr.commits_titles():
+    # find issue matching PR title
+    match=re.match(r'^Fixes #(\d+)', title)
+    if match:
+      issue_id = match.group(1)
+      issue = Issue(issue_id)
+      uid = -1
+      # find user matching the author in redmine
+      for user in issue.server.list_nrm_users():
+        if "custom_fields" in user:
+          for field in user["custom_fields"]:
+            if field["name"] == "GitHub":
+              if "value" in field:
+                if field["value"] == pr.author():
+                  uid = user ["id"]
+      if uid != -1:
+        issue.to_status(status, uid)
+        return
+ 
+
+def pr_merge(repo, url, alt_dir):
+  redirect = ""
+  if Config.LOGLEVEL == "info" or Config.LOGLEVEL == "error":
+    redirect = " > /dev/null 2>/dev/null"
+  workdir = clean_repo(repo, alt_dir)
+  pr = PR(url)
+  command = "rudder-dev merge " + url + " --automatic"
+  (code, output, stderr) = shell(command + " --test", "Trying to merge PR " + url, fail_exit=False, keep_output=True, keep_error=True)
+  log = "-- stdout -- \n" + output + "\n-- stderr --\n" + stderr
+  if not (Config.LOGLEVEL == "info" or Config.LOGLEVEL == "error"):
+    print(log)
+  if code == 127:
+    # extract 15 first lines of (error then output) to limit comment size
+    lines = (log).split('\n')
+    msg = "\n" . join(lines[:5]) + "\n[...]\n" + "\n".join(lines[-10:]) 
+    comment="""This PR breaks """ + Config.QA_TEST + """
+```
+""" + msg + """
+```
+You should run ./""" + Config.QA_TEST + """ in your repository to make sure it works.
+You can also run `rudder-dev merge """ + url + """ --test` to test with upmerging.
+After this, you can remove the """ + Config.PR_VALIDATED_LABEL + """ tag
+-- Your faithful QA"""
+    pr.comment(comment)
+    pr.unlabel(Config.PR_VALIDATED_LABEL)
+    # Reassign needs redmine.py Issue object which needs get_lifecycle, but it should not
+    # Re-enable after next refactoring
+    #reassign(pr, Config.DISCUSSION_CODE)
+  elif code != 0:
+    # PR must be manually merged
+    comment="""This PR is not mergeable to upper versions.
+Since it is "Ready for merge" you must merge it by yourself using the following command:
+`rudder-dev merge """ + url + """`
+-- Your faithful QA"""
+    pr.comment(comment)
+    pr.label(Config.BOT_CANNOT_MERGE_LABEL)
+    #reassign(pr, Config.PENDING_MERGE_CODE)
+  else:
+    # PR can be automatically merged
+    shell(command + redirect, "Automatically merging PR " + url)
+
+  if workdir != Config.WORKING_DIRECTORY:
+    # remove everything temporary
+    shutil.rmtree(workdir)
+
+
+def repo_merge_all(alt_dir):
+  for repo in Config.REPOSITORIES:
+    repo_merge(repo, alt_dir)
+
+
+def manage_label(repo, name, color):
+  get_url = "https://api.github.com/repos/Normation/{repo}/labels/{name}".format(repo=repo, name=name)
+  label = github_call(get_url, fail_ok=True)
+  if label is None:
+    # no such label, create it
+    create_url = "https://api.github.com/repos/Normation/{repo}/labels".format(repo=repo)
+    data = '{"name": "' + name + '", "color": "' + color + '" }'
+    print("- Creating label: " + name)
+    github_call(create_url, post_data=data)
+  else:
+    # check label color
+    if label['color'] != color:
+      data = '{"name": "' + name + '", "color": "' + color + '" }'
+      print("- Updating color of label: " + name)
+      github_call(get_url, post_data=data, method="PATCH")
+
+
+def autolabel(repo):
+  manage_label(repo, Config.BOT_CANNOT_MERGE_LABEL, Config.BOT_CANNOT_MERGE_COLOR)
+  manage_label(repo, Config.PR_VALIDATED_LABEL, Config.PR_VALIDATED_COLOR)
+  manage_label(repo, Config.PR_TOO_OLD_LABEL, Config.PR_TOO_OLD_COLOR)
+
+
+def autolabel_all():
+  for repo in Config.REPOSITORIES:
+    print("Repo: " + repo)
+    autolabel(repo)
+
+
+def pr_cleanup(repo):
+  url = "https://api.github.com/repos/Normation/{repo}/pulls".format(repo=repo)
+  pulls = github_call(url)
+  for pull in pulls:
+    if pull['state'] != "open":
+      continue
+    # generic PR info
+    updated = parse(pull['updated_at'], ignoretz=True)
+    author = pull['user']['login']
+    pr = PR(pull['html_url'])
+    mergeable = pr.mergeable()
+    unmergeable = mergeable is not None and not mergeable
+
+    # info from comments
+    comments = pr.get_comments()
+    last_comment = updated
+    last_ping = updated
+    user = get_github_user()
+    reviewers = [ author ]
+    for c in comments:
+      if c['date'] > last_comment and c['author'] != user:
+        last_comment = c['date']
+      if c['date'] > last_ping and c['author'] == user:
+        last_ping = c['date']
+      reviewers.append(c['author'])
+    reviewers = set(reviewers)
+
+    # age info
+    now = datetime.now()
+    ping_age = (now - last_ping).total_seconds() / 3600 / 24
+    comment_age = (now - last_comment).total_seconds() / 3600 / 24
+    update_age = (now - updated).total_seconds() / 3600 / 24
+    can_ping = ping_age > 3 or ping_age == update_age
+
+    # pings
+    if comment_age > Config.OLD_PR_DAYS and update_age > Config.OLD_PR_DAYS:
+      #print("Very old PR ! : "+pr.url)
+      pr.label(Config.PR_TOO_OLD_LABEL)
+    # next steps
+    #if comment_age > 5 and update_age > 5 and can_ping:
+    #  print("forgotten pr @"+" @".join(reviewers))
+    #if unmergeable and update_age > 1 and can_ping:
+    #  print("Your pr is not mergeable anymore @"+author)
+ 
+
+def pr_cleanup_all():
+  for repo in Config.REPOSITORIES:
+    print("Repo: " + repo)
+    pr_cleanup(repo)
+
+
+if __name__ == "__main__":
+  arguments = docopt.docopt(__doc__)
+  section = "quality-assistant"
+  read_configuration(section)
+  # qa specific configuration
+  Config.WORKING_DIRECTORY = get_config("working_directory", "No 'working_directory' entry in " + Config.CONFIG_FILE, section)
+  Config.LOGLEVEL = get_config("loglevel", "No 'loglevel' entry in " + Config.CONFIG_FILE, section) # verbose, info, error
+  Config.LOCK_TIMEOUT = get_config("lock_timeout", None, section)
+  Config.OLD_PR_DAYS = get_config("old_pr_days", None, section)
+  if Config.OLD_PR_DAYS is None:
+    Config.OLD_PR_DAYS = 30
+    # use a value long enough to wait for a normal run (including tests) if don't use alt_dir
+    # use a value that correspond to the overhead of cloning, checkouting and removing when using alt_dir
+    Config.LOCK_TIMEOUT = 60
+
+  if arguments['-d'] or arguments['--debug']:
+    Config.LOGLEVEL = "debug"
+  Config.force = arguments['-f'] or arguments['--force']
+  if arguments['merge'] and arguments['all']:
+    list_repositories()
+    repo_merge_all(arguments['--alt-dir'])
+  elif arguments['merge']:
+    repo_merge(arguments['<repo>'], arguments['--alt-dir'])
+  elif arguments['autolabel'] and arguments['all']:
+    list_repositories()
+    autolabel_all()
+  elif arguments['autolabel']:
+    autolabel(arguments['<repo>'])
+  elif arguments['pr-cleanup'] and arguments['all']:
+    list_repositories()
+    pr_cleanup_all()
+  elif arguments['pr-cleanup']:
+    pr_cleanup_(arguments['<repo>'])
+     

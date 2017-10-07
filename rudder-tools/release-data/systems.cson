@@ -1,0 +1,86 @@
+# List operating systems properties
+
+debian = { 
+  aliases = [ ]
+  package-format = "dpkg"
+  name = "Debian"
+  codenames = {
+    "5": "lenny",
+    "6": "squeeze",
+    "7": "wheezy",
+    "8": "jessie",
+    "9": "stretch"
+  }
+}
+
+ubuntu = {
+  aliases = [ ]
+  package-format = "dpkg"
+  name = "Ubuntu"
+  codenames = {
+    "10.04": "lucid",
+    "10.10": "maverick",
+    "11.04": "natty",
+    "11.10": "oneiric",
+    "12.04": "precise",
+    "12.10": "quantal",
+    "13.04": "raring",
+    "13.10": "saucy",
+    "14.04": "trusty",
+    "14.10": "utopic",
+    "15.04": "vivid",
+    "15.10": "wily",
+    "16.04": "xenial",
+    "16.10": "yakkety",
+    "17.04": "zesty"
+  }
+}
+
+rhel = {
+  aliases = [ "redhat", "centos" ]
+  package-format = "rpm"
+  name = "Red Hat Entreprise Linux / CentOS"
+}
+
+fedora = {
+  aliases = [ ]
+  package-format = "rpm"
+  name = "Fedora"
+}
+
+sles = {
+  aliases = [ "suse" ]
+  package-format = "rpm"
+  name = "SUSE Linux Enterprise Server"
+}
+
+aix = {
+  aliases = [ ]
+  package-format = "rpm"
+  name = "AIX"
+}
+
+windows = {
+  aliases = [ ]
+  package-format = ""
+  name = "Windows"
+}
+
+android = {
+  aliases = [ ]
+  package-format = ""
+  name = "Android"
+}
+
+freebsd = {
+  aliases = [ ]
+  package-format = ""
+  name = "FreeBSD"
+}
+
+solaris = {
+  aliases = [ "sunos" ]
+  package-format = "pkg"
+  name = "Solaris"
+}
+
