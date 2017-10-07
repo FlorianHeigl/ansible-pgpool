@@ -1,3 +1,0 @@
----
-port: 5432
-backend_port: 9999

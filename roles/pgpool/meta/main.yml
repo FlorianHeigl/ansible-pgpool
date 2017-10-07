@@ -1,4 +1,0 @@
----
-dependencies:
-  - { role: ssh_cluster, ssh_user: postgres }
-  - role: postgres_repo

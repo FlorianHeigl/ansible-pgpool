@@ -1,3 +1,0 @@
-# TYPE  DATABASE        USER            ADDRESS                 METHOD
-host    all             all          {{ hostvars[inventory_hostname]['ansible_'+interface].ipv4.address }}/24  md5
-host    all             all          127.0.0.1/24  md5
